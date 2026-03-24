@@ -1,0 +1,31 @@
+# Project metadata, runtime dependencies, and test configuration for the PDF extractor package.
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-extractor"
+version = "0.1.0"
+description = "CLI tool for extracting text and metadata from PDF files"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pypdf>=5.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.5",
+]
+
+[project.scripts]
+pdf-extractor = "pdf_extractor.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
