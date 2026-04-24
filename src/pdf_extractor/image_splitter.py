@@ -60,6 +60,9 @@ def _extract_ocr_texts(ocr_result: list | None) -> list[str]:
     return texts
 
 
+_MIN_TITLE_SCORE = 50.0
+
+
 def _select_best_title(ocr_result: list | None) -> str | None:
     """Pick the best title candidate from OCR results.
 
@@ -68,8 +71,10 @@ def _select_best_title(ocr_result: list | None) -> str | None:
     field labels, or column headers rather than document titles).  Strings that look
     like addresses, field labels, or long disclaimers are excluded entirely.
 
-    Single-word candidates are kept as a last resort so we always return something
-    when no multi-word candidate survives filtering.
+    Returns None when no candidate clears _MIN_TITLE_SCORE, which causes the caller
+    to classify the page as AMBIGUOUS.  AMBIGUOUS pages attach to the previous
+    document group rather than starting a new one — the intended behaviour for pages
+    that have no discernible title (e.g. the back side of a multi-copy form).
     """
     if not ocr_result or not ocr_result[0]:
         return None
@@ -96,6 +101,11 @@ def _select_best_title(ocr_result: list | None) -> str | None:
         # Long sentences are disclaimers, not titles
         if n > 8:
             continue
+        # Garbled OCR produces runs of all-lowercase words (e.g. "se nag tor stot
+        # codns").  Genuine titles are headed or all-caps; reject candidates with
+        # 2+ all-lowercase words of length > 2.
+        if sum(1 for w in words if w.islower() and len(w) > 2) >= 2:
+            continue
 
         try:
             box = line[0]
@@ -111,7 +121,9 @@ def _select_best_title(ocr_result: list | None) -> str | None:
         if score > best_score:
             best_score, best_text = score, text
 
-    return best_text
+    # If every surviving candidate is a weak column header or form-field label,
+    # treat the page as untitled so it merges with the previous document.
+    return best_text if best_score >= _MIN_TITLE_SCORE else None
 
 
 _logger = logging.getLogger(__name__)
