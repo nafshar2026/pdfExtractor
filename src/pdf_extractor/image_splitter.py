@@ -60,6 +60,58 @@ def _extract_ocr_texts(ocr_result: list | None) -> list[str]:
     return texts
 
 
+def _select_best_title(ocr_result: list | None) -> str | None:
+    """Pick the best title candidate from OCR results.
+
+    Scores each text by font height (box_height) with a multiplier that strongly
+    favours multi-word strings and penalises single words (which tend to be logos,
+    field labels, or column headers rather than document titles).  Strings that look
+    like addresses, field labels, or long disclaimers are excluded entirely.
+
+    Single-word candidates are kept as a last resort so we always return something
+    when no multi-word candidate survives filtering.
+    """
+    if not ocr_result or not ocr_result[0]:
+        return None
+
+    best_text: str | None = None
+    best_score: float = 0.0
+
+    for line in ocr_result[0]:
+        if not line or len(line) < 2 or not line[1]:
+            continue
+        text = line[1][0].strip()
+        if not text or len(text) < 4 or len(text) > _TITLE_MAX_CHARS:
+            continue
+        # Field labels, form numbers with metadata, addresses
+        if any(c in text for c in ":(#@"):
+            continue
+        # Strings with more than 2 digits are addresses/IDs, not titles
+        if sum(c.isdigit() for c in text) > 2:
+            continue
+        words = text.split()
+        n = len(words)
+        # Long sentences are disclaimers, not titles
+        if n > 8:
+            continue
+
+        try:
+            box = line[0]
+            bh = max(pt[1] for pt in box) - min(pt[1] for pt in box)
+        except (IndexError, TypeError):
+            bh = 0
+
+        # Multi-word text scores 2× higher; single words are heavily penalised
+        # so that dealer logos and column headers don't beat real titles.
+        multiplier = 2.0 if n >= 2 else 0.3
+        score = bh * multiplier
+
+        if score > best_score:
+            best_score, best_text = score, text
+
+    return best_text
+
+
 _logger = logging.getLogger(__name__)
 
 
@@ -110,16 +162,14 @@ def analyze_page(pdf_page) -> PageSignal:
 
     top_strip = pil_image.crop((0, 0, width, int(height * _TOP_STRIP_FRACTION)))
     top_result = ocr.ocr(np.array(top_strip))
-    top_texts = _extract_ocr_texts(top_result)
+    best_title = _select_best_title(top_result)
 
-    if top_texts:
-        first_text = top_texts[0].strip()
-        if first_text and len(first_text) <= _TITLE_MAX_CHARS:
-            return PageSignal(
-                classification="NEW_DOC",
-                title_text=first_text,
-                page_num_in_doc=None,
-            )
+    if best_title:
+        return PageSignal(
+            classification="NEW_DOC",
+            title_text=best_title,
+            page_num_in_doc=None,
+        )
 
     return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
 
