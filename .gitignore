@@ -6,6 +6,9 @@ dist/
 build/
 *.egg-info/
 
-# PDF output — split documents are generated artifacts, not source
+# PDF input/output data — no sample or generated files in source control
 output/
-src/pdf_extractor/Data/split/
+src/pdf_extractor/Data/
+
+# Claude Code local settings
+.claude/

@@ -14,6 +14,9 @@ from PIL import Image
 from paddleocr import PaddleOCR
 from pypdf import PdfReader, PdfWriter
 
+# Suppress noisy per-call warnings from PaddleOCR's internal logger.
+logging.getLogger("ppocr").setLevel(logging.ERROR)
+
 from .extractor import (
     _detect_starts,
     _extract_title,
