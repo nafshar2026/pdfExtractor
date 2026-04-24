@@ -250,7 +250,7 @@ def _split_text_run(
 
         first_text = run_texts[local_start]
         lines = _page_lines(first_text)
-        title = _extract_title(lines, -1, f"Document {len(written) + 1}")
+        title = _extract_title(lines, -1, f"Document {len(written) + 1}")  # -1: no DOCUMENT marker index in this context
         base_name = _sanitize_filename(title)
 
         used_names[base_name] = used_names.get(base_name, 0) + 1
