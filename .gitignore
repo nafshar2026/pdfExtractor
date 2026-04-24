@@ -10,5 +10,5 @@ build/
 output/
 src/pdf_extractor/Data/
 
-# Claude Code local settings
-.claude/
+# Claude Code local settings (personal overrides — not shared)
+.claude/settings.local.json
