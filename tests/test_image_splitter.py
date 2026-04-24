@@ -187,3 +187,79 @@ def test_group_orphan_continuation_forms_own_group():
 
 def test_group_empty_input():
     assert _group_image_pages([]) == []
+
+
+from pdf_extractor.image_splitter import _sanitize_image_title
+
+
+def test_sanitize_image_title_replaces_spaces_with_underscores():
+    assert _sanitize_image_title("ST-556 State Tax") == "ST-556_State_Tax"
+
+
+def test_sanitize_image_title_strips_special_chars():
+    assert _sanitize_image_title("Form: A/B") == "Form_AB"
+
+
+def test_sanitize_image_title_empty_falls_back():
+    assert _sanitize_image_title("!!!") == "Untitled"
+
+
+def test_sanitize_image_title_strips_leading_trailing_underscores():
+    assert _sanitize_image_title(" Hello ") == "Hello"
+
+
+from pypdf import PdfReader, PdfWriter
+from pdf_extractor.image_splitter import _write_image_group
+
+
+def _make_real_reader(tmp_path, num_pages: int = 3) -> PdfReader:
+    """Creates a minimal real PDF with num_pages blank pages."""
+    pdf_path = tmp_path / "source.pdf"
+    writer = PdfWriter()
+    for _ in range(num_pages):
+        writer.add_blank_page(width=612, height=792)
+    with pdf_path.open("wb") as f:
+        writer.write(f)
+    return PdfReader(str(pdf_path))
+
+
+def test_write_image_group_title_based_name(tmp_path):
+    reader = _make_real_reader(tmp_path, num_pages=3)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    signals = {0: PageSignal("NEW_DOC", "ST-556 State Tax", None)}
+    used_names: dict = {}
+
+    dest = _write_image_group(reader, [0, 1], signals, out_dir, used_names)
+
+    assert dest.name == "ST-556_State_Tax.pdf"
+    assert dest.exists()
+    result = PdfReader(str(dest))
+    assert len(result.pages) == 2
+
+
+def test_write_image_group_fallback_name(tmp_path):
+    reader = _make_real_reader(tmp_path, num_pages=5)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    signals = {2: PageSignal("AMBIGUOUS", None, None)}
+    used_names: dict = {}
+
+    dest = _write_image_group(reader, [2, 3, 4], signals, out_dir, used_names)
+
+    assert dest.name == "pages_3-5.pdf"
+
+
+def test_write_image_group_duplicate_name_gets_suffix(tmp_path):
+    reader = _make_real_reader(tmp_path, num_pages=4)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    signals_a = {0: PageSignal("NEW_DOC", "Form ABC", None)}
+    signals_b = {2: PageSignal("NEW_DOC", "Form ABC", None)}
+    used_names: dict = {}
+
+    dest_a = _write_image_group(reader, [0, 1], signals_a, out_dir, used_names)
+    dest_b = _write_image_group(reader, [2, 3], signals_b, out_dir, used_names)
+
+    assert dest_a.name == "Form_ABC.pdf"
+    assert dest_b.name == "Form_ABC (2).pdf"

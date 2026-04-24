@@ -144,3 +144,72 @@ def _group_image_pages(
         groups.append(current)
 
     return groups
+
+
+def _sanitize_image_title(title: str) -> str:
+    """Sanitize a document title into a safe filename stem.
+
+    - Removes non-alphanumeric/non-dash characters
+    - Replaces spaces with underscores
+    - Strips leading/trailing underscores
+    - Returns "Untitled" for empty result
+
+    Args:
+        title: Raw title text extracted from OCR
+
+    Returns:
+        Safe filename stem (e.g., "ST-556_State_Tax")
+    """
+    cleaned = re.sub(r"[^\w\s-]", "", title).strip()
+    cleaned = re.sub(r"\s+", "_", cleaned).strip("_")
+    return cleaned or "Untitled"
+
+
+def _write_image_group(
+    reader: PdfReader,
+    group: list[int],
+    signals: dict[int, PageSignal],
+    out_dir: Path,
+    used_names: dict[str, int],
+) -> Path:
+    """Extract and write a group of pages to a PDF.
+
+    Names the output based on:
+    1. The title from the first page's PageSignal (if present)
+    2. Fallback: "pages_X-Y" (1-based page numbers)
+
+    Handles duplicate names by appending " (2)", " (3)", etc.
+
+    Args:
+        reader: Source PDF reader
+        group: List of absolute page indices to extract
+        signals: Dict mapping page index to PageSignal
+        out_dir: Output directory Path
+        used_names: Dict tracking name usage counts (modified in-place)
+
+    Returns:
+        Path to the written PDF file
+    """
+    first_idx = group[0]
+    signal = signals.get(first_idx)
+    raw_title = signal.title_text if signal and signal.title_text else None
+
+    if raw_title:
+        base_name = _sanitize_image_title(raw_title)
+    else:
+        start_page = first_idx + 1
+        end_page = group[-1] + 1
+        base_name = f"pages_{start_page}-{end_page}" if len(group) > 1 else f"page_{start_page}"
+
+    used_names[base_name] = used_names.get(base_name, 0) + 1
+    suffix = "" if used_names[base_name] == 1 else f" ({used_names[base_name]})"
+    destination = out_dir / f"{base_name}{suffix}.pdf"
+
+    writer = PdfWriter()
+    for page_idx in group:
+        writer.add_page(reader.pages[page_idx])
+
+    with destination.open("wb") as handle:
+        writer.write(handle)
+
+    return destination
