@@ -307,3 +307,64 @@ def _split_image_run(
         written.append(dest)
 
     return written
+
+
+def split_pdf(pdf_path: str | Path, output_dir: str | Path) -> list[Path]:
+    """Unified PDF splitter handling both text and image page runs.
+
+    Classifies each page as "text" (≥50 chars) or "image" (<50 chars) by extracting text,
+    groups consecutive same-mode pages into runs, and delegates to _split_text_run or
+    _split_image_run accordingly.
+
+    Args:
+        pdf_path: Path to input PDF file
+        output_dir: Path to output directory (created if not exists)
+
+    Returns:
+        List of Paths to written PDF files (in order)
+
+    Raises:
+        FileNotFoundError: If pdf_path does not exist
+    """
+    path = Path(pdf_path)
+    out_dir = Path(output_dir)
+
+    if not path.exists():
+        raise FileNotFoundError(f"Input PDF not found: {path}")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    reader = PdfReader(str(path))
+    total = len(reader.pages)
+
+    page_texts = [(reader.pages[i].extract_text() or "").strip() for i in range(total)]
+    page_is_text = [len(t) >= _TEXT_PAGE_MIN_CHARS for t in page_texts]
+
+    runs: list[tuple[str, int, int]] = []
+    if total > 0:
+        start = 0
+        mode = "text" if page_is_text[0] else "image"
+        for i in range(1, total):
+            cur_mode = "text" if page_is_text[i] else "image"
+            if cur_mode != mode:
+                runs.append((mode, start, i))
+                start = i
+                mode = cur_mode
+        runs.append((mode, start, total))
+
+    written: list[Path] = []
+    used_names: dict[str, int] = {}
+    doc_idx = 0
+
+    for run_mode, run_start, run_end in runs:
+        if run_mode == "text":
+            new_docs = _split_text_run(reader, page_texts, run_start, run_end, out_dir, used_names)
+        else:
+            new_docs = _split_image_run(reader, run_start, run_end, out_dir, used_names)
+
+        for doc in new_docs:
+            doc_idx += 1
+            print(f"[{doc_idx}] → {doc.name}")
+
+        written.extend(new_docs)
+
+    return written

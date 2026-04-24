@@ -321,3 +321,48 @@ def test_split_text_run_splits_by_markers(tmp_path):
     assert len(r0.pages) == 2
     r1 = PdfReader(str(written[1]))
     assert len(r1.pages) == 1
+
+
+from pdf_extractor.image_splitter import split_pdf
+import pytest
+
+
+def test_split_pdf_raises_for_missing_file(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        split_pdf(tmp_path / "nonexistent.pdf", tmp_path / "out")
+
+
+def test_split_pdf_creates_output_dir(tmp_path):
+    source = tmp_path / "source.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    with source.open("wb") as f:
+        writer.write(f)
+    out_dir = tmp_path / "new_out_dir"
+
+    fake_signal = PageSignal("NEW_DOC", "MyDoc", None)
+    with patch("pdf_extractor.image_splitter.analyze_page", return_value=fake_signal):
+        split_pdf(source, out_dir)
+
+    assert out_dir.exists()
+
+
+def test_split_pdf_routes_image_pages_through_analyze(tmp_path):
+    """Blank pages (no text) must route through analyze_page, not text splitter."""
+    source = tmp_path / "source.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=612, height=792)
+    with source.open("wb") as f:
+        writer.write(f)
+    out_dir = tmp_path / "out"
+
+    signals = [
+        PageSignal("NEW_DOC", "Doc One", None),
+        PageSignal("NEW_DOC", "Doc Two", None),
+    ]
+    with patch("pdf_extractor.image_splitter.analyze_page", side_effect=signals) as mock_analyze:
+        result = split_pdf(source, out_dir)
+
+    assert mock_analyze.call_count == 2
+    assert len(result) == 2
