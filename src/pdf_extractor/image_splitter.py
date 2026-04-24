@@ -113,3 +113,34 @@ def analyze_page(pdf_page) -> PageSignal:
             )
 
     return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
+
+
+def _group_image_pages(
+    signals: list[tuple[int, PageSignal]],
+) -> list[list[int]]:
+    if not signals:
+        return []
+
+    groups: list[list[int]] = []
+    current: list[int] = []
+
+    for abs_idx, signal in signals:
+        if signal.classification == "CONTINUATION":
+            if current:
+                current.append(abs_idx)
+            else:
+                current = [abs_idx]
+        elif signal.classification == "NEW_DOC":
+            if current:
+                groups.append(current)
+            current = [abs_idx]
+        else:  # AMBIGUOUS
+            if current:
+                current.append(abs_idx)
+            else:
+                current = [abs_idx]
+
+    if current:
+        groups.append(current)
+
+    return groups

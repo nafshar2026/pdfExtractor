@@ -126,3 +126,64 @@ def test_analyze_page_page_1_of_n_is_not_continuation():
         sig = analyze_page(page)
     assert sig.classification == "NEW_DOC"
     assert sig.title_text == "Title Here"
+
+
+from pdf_extractor.image_splitter import _group_image_pages
+
+
+def _sig(cls, title=None, page_num=None):
+    return PageSignal(classification=cls, title_text=title, page_num_in_doc=page_num)
+
+
+def test_group_single_new_doc():
+    signals = [(0, _sig("NEW_DOC", "Title A"))]
+    assert _group_image_pages(signals) == [[0]]
+
+
+def test_group_new_doc_then_continuation():
+    signals = [
+        (0, _sig("NEW_DOC", "Title A")),
+        (1, _sig("CONTINUATION", page_num=2)),
+        (2, _sig("CONTINUATION", page_num=3)),
+    ]
+    assert _group_image_pages(signals) == [[0, 1, 2]]
+
+
+def test_group_two_consecutive_new_docs():
+    """Two NEW_DOC pages back-to-back must become separate documents."""
+    signals = [
+        (10, _sig("NEW_DOC", "Title A")),
+        (11, _sig("NEW_DOC", "Title B")),
+    ]
+    assert _group_image_pages(signals) == [[10], [11]]
+
+
+def test_group_ambiguous_extends_current():
+    signals = [
+        (0, _sig("NEW_DOC", "Title")),
+        (1, _sig("AMBIGUOUS")),
+        (2, _sig("AMBIGUOUS")),
+    ]
+    assert _group_image_pages(signals) == [[0, 1, 2]]
+
+
+def test_group_leading_ambiguous_forms_own_group():
+    """AMBIGUOUS pages before any NEW_DOC form their own group."""
+    signals = [
+        (0, _sig("AMBIGUOUS")),
+        (1, _sig("NEW_DOC", "Title")),
+    ]
+    assert _group_image_pages(signals) == [[0], [1]]
+
+
+def test_group_orphan_continuation_forms_own_group():
+    """CONTINUATION with no preceding group starts one (defensive)."""
+    signals = [
+        (0, _sig("CONTINUATION", page_num=2)),
+        (1, _sig("NEW_DOC", "Title")),
+    ]
+    assert _group_image_pages(signals) == [[0], [1]]
+
+
+def test_group_empty_input():
+    assert _group_image_pages([]) == []
