@@ -366,3 +366,28 @@ def test_split_pdf_routes_image_pages_through_analyze(tmp_path):
 
     assert mock_analyze.call_count == 2
     assert len(result) == 2
+
+
+from unittest.mock import patch
+from pdf_extractor.cli import main
+
+
+def test_cli_split_documents_calls_split_pdf(tmp_path, monkeypatch):
+    source = tmp_path / "source.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    with source.open("wb") as f:
+        writer.write(f)
+    out_dir = tmp_path / "split"
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["pdf-extractor", str(source), "--split-documents", "--split-output-dir", str(out_dir)],
+    )
+
+    with patch("pdf_extractor.cli.split_pdf") as mock_split:
+        mock_split.return_value = [out_dir / "Doc.pdf"]
+        exit_code = main()
+
+    mock_split.assert_called_once_with(source, str(out_dir))
+    assert exit_code == 0

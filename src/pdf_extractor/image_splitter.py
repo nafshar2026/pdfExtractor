@@ -33,7 +33,7 @@ _ocr_instance: PaddleOCR | None = None
 def _get_ocr() -> PaddleOCR:
     global _ocr_instance
     if _ocr_instance is None:
-        _ocr_instance = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
+        _ocr_instance = PaddleOCR(use_textline_orientation=False, lang="en")
     return _ocr_instance
 
 
@@ -87,7 +87,7 @@ def analyze_page(pdf_page) -> PageSignal:
         return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
 
     bottom_strip = pil_image.crop((0, int(height * (1 - _BOTTOM_STRIP_FRACTION)), width, height))
-    bottom_result = ocr.ocr(np.array(bottom_strip), cls=False)
+    bottom_result = ocr.ocr(np.array(bottom_strip))
     bottom_texts = _extract_ocr_texts(bottom_result)
 
     for text in bottom_texts:
@@ -100,7 +100,7 @@ def analyze_page(pdf_page) -> PageSignal:
             )
 
     top_strip = pil_image.crop((0, 0, width, int(height * _TOP_STRIP_FRACTION)))
-    top_result = ocr.ocr(np.array(top_strip), cls=False)
+    top_result = ocr.ocr(np.array(top_strip))
     top_texts = _extract_ocr_texts(top_result)
 
     if top_texts:
@@ -363,7 +363,7 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path) -> list[Path]:
 
         for doc in new_docs:
             doc_idx += 1
-            print(f"[{doc_idx}] → {doc.name}")
+            print(f"[{doc_idx}] -> {doc.name}")
 
         written.extend(new_docs)
 

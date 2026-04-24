@@ -6,7 +6,12 @@ import argparse
 import json
 from pathlib import Path
 
-from .extractor import ExtractedDocument, extract_pdf, find_pdf_files
+from .extractor import (
+    ExtractedDocument,
+    extract_pdf,
+    find_pdf_files,
+)
+from .image_splitter import split_pdf
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +34,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--recursive",
         action="store_true",
         help="Recursively search for PDFs when the input path is a directory",
+    )
+    parser.add_argument(
+        "--split-documents",
+        action="store_true",
+        help="Split one PDF into one PDF per logical document (handles text and scanned image pages)",
+    )
+    parser.add_argument(
+        "--split-output-dir",
+        default="output\\split",
+        help="Directory where split PDFs will be written",
     )
     return parser
 
@@ -64,6 +79,14 @@ def main() -> int:
 
     if not pdf_files:
         parser.error("No PDF files found in the given input path.")
+
+    if args.split_documents:
+        if len(pdf_files) != 1:
+            parser.error("--split-documents requires exactly one input PDF.")
+        written_files = split_pdf(pdf_files[0], args.split_output_dir)
+        for written_file in written_files:
+            print(written_file)
+        return 0
 
     output_dir = Path(args.output_dir)
     written_files: list[Path] = []
