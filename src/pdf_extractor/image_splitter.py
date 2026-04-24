@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,16 +57,22 @@ def _extract_ocr_texts(ocr_result: list | None) -> list[str]:
     return texts
 
 
+_logger = logging.getLogger(__name__)
+
+
 def _page_to_pil(pdf_page) -> Image.Image | None:
     images = pdf_page.images
     if not images:
         return None
+    # Use only the first embedded image. For typical scanned-document PDFs each page
+    # is a single raster image; additional images (logos, stamps) are ignored.
     img_obj = images[0]
     if img_obj.image is not None:
         return img_obj.image.convert("RGB")
     try:
         return Image.open(io.BytesIO(img_obj.data)).convert("RGB")
-    except Exception:
+    except Exception as exc:
+        _logger.debug("_page_to_pil: could not decode image data: %s", exc)
         return None
 
 
@@ -76,6 +83,8 @@ def analyze_page(pdf_page) -> PageSignal:
 
     ocr = _get_ocr()
     width, height = pil_image.size
+    if width == 0 or height == 0:
+        return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
 
     bottom_strip = pil_image.crop((0, int(height * (1 - _BOTTOM_STRIP_FRACTION)), width, height))
     bottom_result = ocr.ocr(np.array(bottom_strip), cls=False)
