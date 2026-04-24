@@ -54,3 +54,53 @@ def _extract_ocr_texts(ocr_result: list | None) -> list[str]:
         if line and len(line) >= 2 and line[1]:
             texts.append(line[1][0])
     return texts
+
+
+def _page_to_pil(pdf_page) -> Image.Image | None:
+    images = pdf_page.images
+    if not images:
+        return None
+    img_obj = images[0]
+    if img_obj.image is not None:
+        return img_obj.image.convert("RGB")
+    try:
+        return Image.open(io.BytesIO(img_obj.data)).convert("RGB")
+    except Exception:
+        return None
+
+
+def analyze_page(pdf_page) -> PageSignal:
+    pil_image = _page_to_pil(pdf_page)
+    if pil_image is None:
+        return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
+
+    ocr = _get_ocr()
+    width, height = pil_image.size
+
+    bottom_strip = pil_image.crop((0, int(height * (1 - _BOTTOM_STRIP_FRACTION)), width, height))
+    bottom_result = ocr.ocr(np.array(bottom_strip), cls=False)
+    bottom_texts = _extract_ocr_texts(bottom_result)
+
+    for text in bottom_texts:
+        m = _CONTINUATION_RE.search(text)
+        if m and int(m.group(1)) > 1:
+            return PageSignal(
+                classification="CONTINUATION",
+                title_text=None,
+                page_num_in_doc=int(m.group(1)),
+            )
+
+    top_strip = pil_image.crop((0, 0, width, int(height * _TOP_STRIP_FRACTION)))
+    top_result = ocr.ocr(np.array(top_strip), cls=False)
+    top_texts = _extract_ocr_texts(top_result)
+
+    if top_texts:
+        first_text = top_texts[0].strip()
+        if first_text and len(first_text) <= _TITLE_MAX_CHARS:
+            return PageSignal(
+                classification="NEW_DOC",
+                title_text=first_text,
+                page_num_in_doc=None,
+            )
+
+    return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
