@@ -263,3 +263,61 @@ def test_write_image_group_duplicate_name_gets_suffix(tmp_path):
 
     assert dest_a.name == "Form_ABC.pdf"
     assert dest_b.name == "Form_ABC (2).pdf"
+
+
+from unittest.mock import patch, MagicMock
+from pdf_extractor.image_splitter import _split_image_run, _split_text_run
+
+
+def test_split_image_run_produces_one_file_per_group(tmp_path):
+    reader = _make_real_reader(tmp_path, num_pages=4)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    used_names: dict = {}
+
+    signals = [
+        PageSignal("NEW_DOC", "Doc One", None),
+        PageSignal("CONTINUATION", None, 2),
+        PageSignal("NEW_DOC", "Doc Two", None),
+        PageSignal("AMBIGUOUS", None, None),
+    ]
+
+    with patch("pdf_extractor.image_splitter.analyze_page", side_effect=signals):
+        written = _split_image_run(reader, 0, 4, out_dir, used_names)
+
+    assert len(written) == 2
+    assert written[0].name == "Doc_One.pdf"
+    assert written[1].name == "Doc_Two.pdf"
+    result_0 = PdfReader(str(written[0]))
+    assert len(result_0.pages) == 2
+    result_1 = PdfReader(str(written[1]))
+    assert len(result_1.pages) == 2
+
+
+def test_split_text_run_splits_by_markers(tmp_path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=612, height=792)
+    pdf_path = tmp_path / "source.pdf"
+    with pdf_path.open("wb") as f:
+        writer.write(f)
+    reader = PdfReader(str(pdf_path))
+
+    page_texts = [
+        "DOCUMENT 1 OF 2\nApplicable Law\nsome content here to exceed fifty chars minimum",
+        "continued content page two here with enough text to count as substantial",
+        "DOCUMENT 2 OF 2\nOdometer Disclosure Statement\ncontent here enough chars",
+    ]
+    used_names: dict = {}
+
+    written = _split_text_run(reader, page_texts, 0, 3, out_dir, used_names)
+
+    assert len(written) == 2
+    r0 = PdfReader(str(written[0]))
+    assert len(r0.pages) == 2
+    r1 = PdfReader(str(written[1]))
+    assert len(r1.pages) == 1

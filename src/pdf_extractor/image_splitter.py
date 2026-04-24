@@ -213,3 +213,97 @@ def _write_image_group(
         writer.write(handle)
 
     return destination
+
+
+def _split_text_run(
+    reader: PdfReader,
+    all_page_texts: list[str],
+    start: int,
+    end: int,
+    out_dir: Path,
+    used_names: dict[str, int],
+) -> list[Path]:
+    """Split a run of pages by text-based document boundaries.
+
+    Detects document starts within the slice using _detect_starts (which works on local indices),
+    then adjusts to absolute page indices when writing to the PDF.
+
+    Args:
+        reader: Source PDF reader
+        all_page_texts: Full list of page texts (indexed 0 to len-1)
+        start: Start index (inclusive) into all_page_texts
+        end: End index (exclusive) into all_page_texts
+        out_dir: Output directory Path
+        used_names: Dict tracking name usage counts (modified in-place)
+
+    Returns:
+        List of Paths to written PDF files
+    """
+    run_texts = all_page_texts[start:end]
+    local_starts = _detect_starts(run_texts)
+
+    written: list[Path] = []
+    for i, local_start in enumerate(local_starts):
+        local_end = local_starts[i + 1] if i + 1 < len(local_starts) else len(run_texts)
+        if all(not run_texts[j].strip() for j in range(local_start, local_end)):
+            continue
+
+        first_text = run_texts[local_start]
+        lines = _page_lines(first_text)
+        title = _extract_title(lines, -1, f"Document {len(written) + 1}")
+        base_name = _sanitize_filename(title)
+
+        used_names[base_name] = used_names.get(base_name, 0) + 1
+        suffix = "" if used_names[base_name] == 1 else f" ({used_names[base_name]})"
+        destination = out_dir / f"{base_name}{suffix}.pdf"
+
+        writer = PdfWriter()
+        for page_num in range(start + local_start, start + local_end):
+            writer.add_page(reader.pages[page_num])
+
+        with destination.open("wb") as handle:
+            writer.write(handle)
+
+        written.append(destination)
+
+    return written
+
+
+def _split_image_run(
+    reader: PdfReader,
+    start: int,
+    end: int,
+    out_dir: Path,
+    used_names: dict[str, int],
+) -> list[Path]:
+    """Split a run of pages by image-based signals (titles and page numbers).
+
+    Analyzes each page in the range [start, end) to detect document boundaries,
+    groups them by _group_image_pages, and writes each group as a separate PDF.
+
+    Args:
+        reader: Source PDF reader
+        start: Start index (inclusive) into reader.pages
+        end: End index (exclusive) into reader.pages
+        out_dir: Output directory Path
+        used_names: Dict tracking name usage counts (modified in-place)
+
+    Returns:
+        List of Paths to written PDF files
+    """
+    signals_list: list[tuple[int, PageSignal]] = []
+    signals_dict: dict[int, PageSignal] = {}
+
+    for abs_idx in range(start, end):
+        signal = analyze_page(reader.pages[abs_idx])
+        signals_list.append((abs_idx, signal))
+        signals_dict[abs_idx] = signal
+
+    groups = _group_image_pages(signals_list)
+
+    written: list[Path] = []
+    for group in groups:
+        dest = _write_image_group(reader, group, signals_dict, out_dir, used_names)
+        written.append(dest)
+
+    return written
