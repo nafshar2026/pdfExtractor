@@ -5,3 +5,7 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# PDF output — split documents are generated artifacts, not source
+output/
+src/pdf_extractor/Data/split/

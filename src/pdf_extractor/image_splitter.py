@@ -33,7 +33,7 @@ _ocr_instance: PaddleOCR | None = None
 def _get_ocr() -> PaddleOCR:
     global _ocr_instance
     if _ocr_instance is None:
-        _ocr_instance = PaddleOCR(use_textline_orientation=False, lang="en")
+        _ocr_instance = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
     return _ocr_instance
 
 
@@ -64,16 +64,22 @@ def _page_to_pil(pdf_page) -> Image.Image | None:
     images = pdf_page.images
     if not images:
         return None
-    # Use only the first embedded image. For typical scanned-document PDFs each page
-    # is a single raster image; additional images (logos, stamps) are ignored.
-    img_obj = images[0]
-    if img_obj.image is not None:
-        return img_obj.image.convert("RGB")
-    try:
-        return Image.open(io.BytesIO(img_obj.data)).convert("RGB")
-    except Exception as exc:
-        _logger.debug("_page_to_pil: could not decode image data: %s", exc)
-        return None
+
+    # Pick the largest image by pixel area — pages may embed small logos or stamps
+    # before the main scan, so images[0] is not necessarily the page scan.
+    best: Image.Image | None = None
+    best_area = 0
+    for img_obj in images:
+        try:
+            pil = img_obj.image.convert("RGB") if img_obj.image is not None else Image.open(io.BytesIO(img_obj.data)).convert("RGB")
+        except Exception as exc:
+            _logger.debug("_page_to_pil: could not decode image: %s", exc)
+            continue
+        w, h = pil.size
+        if w * h > best_area:
+            best, best_area = pil, w * h
+
+    return best
 
 
 def analyze_page(pdf_page) -> PageSignal:
@@ -353,18 +359,12 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path) -> list[Path]:
 
     written: list[Path] = []
     used_names: dict[str, int] = {}
-    doc_idx = 0
 
     for run_mode, run_start, run_end in runs:
         if run_mode == "text":
             new_docs = _split_text_run(reader, page_texts, run_start, run_end, out_dir, used_names)
         else:
             new_docs = _split_image_run(reader, run_start, run_end, out_dir, used_names)
-
-        for doc in new_docs:
-            doc_idx += 1
-            print(f"[{doc_idx}] -> {doc.name}")
-
         written.extend(new_docs)
 
     return written

@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--split-output-dir",
-        default="output\\split",
+        default="output/split",
         help="Directory where split PDFs will be written",
     )
     return parser
@@ -84,8 +84,8 @@ def main() -> int:
         if len(pdf_files) != 1:
             parser.error("--split-documents requires exactly one input PDF.")
         written_files = split_pdf(pdf_files[0], args.split_output_dir)
-        for written_file in written_files:
-            print(written_file)
+        for idx, written_file in enumerate(written_files, start=1):
+            print(f"[{idx}] -> {written_file.name}")
         return 0
 
     output_dir = Path(args.output_dir)
