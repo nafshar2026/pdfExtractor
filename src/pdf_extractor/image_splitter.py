@@ -86,8 +86,10 @@ def _select_best_title(ocr_result: list | None) -> str | None:
         # Field labels, form numbers with metadata, addresses
         if any(c in text for c in ":(#@"):
             continue
-        # Strings with more than 2 digits are addresses/IDs, not titles
-        if sum(c.isdigit() for c in text) > 2:
+        # Strings with 7+ digits are addresses, phone numbers, or VINs — not titles.
+        # Threshold is deliberately high so form numbers (ST-556, DEAL 321130, DT 523)
+        # survive; phone numbers (847-882-8400 = 10d) and zip+4 strings do not.
+        if sum(c.isdigit() for c in text) >= 7:
             continue
         words = text.split()
         n = len(words)
