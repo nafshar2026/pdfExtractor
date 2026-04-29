@@ -44,7 +44,7 @@ py -3.11 -m venv .venv
 # Run tests (53 tests)
 .venv/Scripts/python -m pytest tests/ -v
 
-# Generate the MuleSoft test PDF (text-based, multi-document)
+# Generate the sample multi-document test PDF (text-based)
 .venv/Scripts/python src/pdf_extractor/genpdf.py
 ```
 

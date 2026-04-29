@@ -1,8 +1,8 @@
 """
-MuleSoft → MCP Migration Package — PDF Generator
+API Platform Migration Package — PDF Generator
 Requires: pip install reportlab
 Run:      python generate_pdf.py
-Output:   MuleSoft-MCP-Migration-Package.pdf
+Output:   API-Platform-Migration-Package.pdf
 """
 
 from reportlab.lib.pagesizes import A4
@@ -18,7 +18,7 @@ from reportlab.lib.enums import TA_LEFT, TA_CENTER
 
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "Data"
-OUTPUT_FILE = OUTPUT_DIR / "MuleSoft-MCP-Migration-Package.pdf"
+OUTPUT_FILE = OUTPUT_DIR / "API-Platform-Migration-Package.pdf"
 W, H = A4  # 595.27 x 841.89 points
 
 # ── Brand colors ────────────────────────────────────────────────────────────
@@ -34,23 +34,23 @@ CREAM   = colors.HexColor("#f5f3ee")
 DOCUMENTS = [
     {
         "title": "Executive Summary",
-        "subtitle": "MuleSoft to MCP Migration Initiative",
+        "subtitle": "Legacy Platform to Modern Integration Initiative",
         "sections": [
             ("Overview",
              "This document package outlines the strategic, technical, and operational "
-             "plan for migrating the organization's MuleSoft API platform to a Model "
-             "Context Protocol (MCP) architecture, enabling AI-native agent integration "
+             "plan for migrating the organization's legacy API platform to a modern "
+             "integration architecture, enabling AI-native agent integration "
              "across all enterprise systems."),
             ("Objectives",
-             "1. Reduce annual MuleSoft licensing costs by transitioning to open-source "
-             "MCP infrastructure.\n"
+             "1. Reduce annual licensing costs by transitioning to open-source "
+             "infrastructure.\n"
              "2. Enable AI agents to autonomously discover and invoke enterprise tools "
              "without custom integration code.\n"
              "3. Establish a centralized, governed tool registry as the AI integration "
              "layer of record.\n"
              "4. Complete full migration within four phases over 12–18 months."),
             ("Expected Outcomes",
-             "All enterprise APIs will be registered as MCP tools consumable by any LLM "
+             "All enterprise APIs will be registered as modern tools consumable by any LLM "
              "or agent framework. The organization will achieve significant cost savings, "
              "accelerated AI adoption, and a compounding architectural advantage as new "
              "AI capabilities are deployed."),
@@ -63,28 +63,29 @@ DOCUMENTS = [
     },
     {
         "title": "Business Case",
-        "subtitle": "Converting MuleSoft APIs into MCP Tools & Agents",
+        "subtitle": "Converting Legacy APIs into Modern Tools & Agents",
         "sections": [
             ("The Strategic Problem",
-             "MuleSoft was designed for a world where humans wrote integration logic and "
-             "APIs were called by applications. That world is being replaced by one where "
-             "AI agents select and orchestrate capabilities autonomously. MuleSoft's rigid "
-             "flows and heavyweight runtimes are fundamentally misaligned with AI-native "
-             "systems."),
+             "Legacy integration platforms were designed for a world where humans wrote "
+             "integration logic and APIs were called by applications. That world is being "
+             "replaced by one where AI agents select and orchestrate capabilities "
+             "autonomously. Legacy rigid flows and heavyweight runtimes are fundamentally "
+             "misaligned with AI-native systems."),
             ("Financial Case",
-             "MuleSoft enterprise licensing typically costs hundreds of thousands to "
-             "millions of dollars annually. MCP servers are open-source with no per-seat "
-             "or per-API-call fees. Developer productivity improves significantly as MCP "
-             "tools are written in standard code (Python, TypeScript) by any engineer."),
+             "Legacy enterprise integration licensing typically costs hundreds of thousands "
+             "to millions of dollars annually. Modern open-source integration servers carry "
+             "no per-seat or per-API-call fees. Developer productivity improves "
+             "significantly as tools are written in standard code (Python, TypeScript) "
+             "by any engineer."),
             ("Technical Case",
-             "Each MuleSoft concept maps cleanly to an MCP equivalent:\n"
+             "Each legacy platform concept maps cleanly to a modern equivalent:\n"
              "  - API endpoint / flow  →  Tool function\n"
-             "  - Anypoint Exchange    →  MCP tool registry\n"
+             "  - Exchange catalog     →  Central tool registry\n"
              "  - Orchestration flow   →  AI agent reasoning loop\n"
-             "  - DataWeave transform  →  LLM-native data handling\n"
-             "  - API gateway          →  MCP server with auth middleware"),
+             "  - Transform scripts    →  LLM-native data handling\n"
+             "  - API gateway          →  Server with auth middleware"),
             ("Strategic Case",
-             "Organizations that build MCP tool registries now gain a compounding "
+             "Organizations that build centralized tool registries now gain a compounding "
              "advantage. Every new AI capability automatically has access to the full "
              "library of enterprise tools, rather than requiring custom integration "
              "plumbing for each new use case."),
@@ -92,14 +93,14 @@ DOCUMENTS = [
     },
     {
         "title": "Technical Architecture",
-        "subtitle": "MCP Server Design & Tool Registration",
+        "subtitle": "Server Design & Tool Registration",
         "sections": [
             ("Architecture Overview",
-             "The target architecture consists of one or more MCP servers acting as a "
-             "centralized tool registry. Each former MuleSoft API becomes a discrete, "
-             "versioned tool function. AI agents connect to the MCP server and "
+             "The target architecture consists of one or more integration servers acting as "
+             "a centralized tool registry. Each former legacy API becomes a discrete, "
+             "versioned tool function. AI agents connect to the server and "
              "autonomously select and invoke tools based on task context."),
-            ("MCP Server Components",
+            ("Server Components",
              "1. Tool Registry: Central catalog of all tool functions with metadata, "
              "schemas, and descriptions.\n"
              "2. Auth Middleware: OAuth 2.0 / API key authentication and tool-level "
@@ -115,10 +116,10 @@ DOCUMENTS = [
              "  - output_schema: JSON Schema defining the response structure\n"
              "  - auth_scope:   Required permission scope for invocation"),
             ("Security Considerations",
-             "MCP servers support OAuth, API key auth, and fine-grained tool-level "
+             "Integration servers support OAuth, API key auth, and fine-grained tool-level "
              "permission scoping. All invocations are logged with agent identity, "
              "timestamp, inputs, and output status — providing better visibility than "
-             "most MuleSoft deployments."),
+             "most legacy deployments."),
         ],
     },
     {
@@ -126,26 +127,26 @@ DOCUMENTS = [
         "subtitle": "4-Phase Rollout Over 12–18 Months",
         "sections": [
             ("Phase 1 — Wrap APIs as Tools  (Months 1–3)",
-             "Identify the 5–10 highest-value MuleSoft APIs. Wrap each as a discrete MCP "
+             "Identify the 5–10 highest-value legacy APIs. Wrap each as a discrete modern "
              "tool function with a clear input/output schema. Run in parallel with "
-             "existing MuleSoft flows.\n"
+             "existing legacy flows.\n"
              "Deliverable: Working tool functions for priority APIs, validated against "
              "existing integration tests."),
-            ("Phase 2 — Register in MCP Server  (Months 3–6)",
-             "Stand up an MCP server (open-source or managed). Register all wrapped tools "
-             "with descriptions, schemas, and auth. Validate tool discoverability and "
+            ("Phase 2 — Register in Central Server  (Months 3–6)",
+             "Stand up an integration server (open-source or managed). Register all wrapped "
+             "tools with descriptions, schemas, and auth. Validate tool discoverability and "
              "invocation.\n"
-             "Deliverable: Live MCP server with full tool registry for Phase 1 APIs."),
+             "Deliverable: Live server with full tool registry for Phase 1 APIs."),
             ("Phase 3 — Connect AI Agents  (Months 6–12)",
-             "Deploy an AI agent (e.g. Claude) connected to the MCP server. Demonstrate "
-             "a high-value use case that previously required months of MuleSoft "
+             "Deploy an AI agent connected to the integration server. Demonstrate "
+             "a high-value use case that previously required months of legacy platform "
              "development. Use this proof-of-concept to close organizational buy-in.\n"
              "Deliverable: Production AI agent use case with measurable business value."),
-            ("Phase 4 — Decommission MuleSoft  (Months 12–18)",
-             "Migrate remaining APIs to MCP tools. Validate full parity with existing "
-             "integration coverage. Sunset Anypoint Platform and realize licensing "
+            ("Phase 4 — Decommission Legacy Platform  (Months 12–18)",
+             "Migrate remaining APIs to modern tools. Validate full parity with existing "
+             "integration coverage. Sunset the legacy platform and realize licensing "
              "savings.\n"
-             "Deliverable: Full MCP tool registry, MuleSoft decommissioned, license "
+             "Deliverable: Full tool registry, legacy platform decommissioned, license "
              "costs eliminated."),
         ],
     },
@@ -203,7 +204,7 @@ def draw_cover(c: canvas.Canvas):
     # Main title
     c.setFillColor(LIGHT)
     c.setFont("Helvetica-Bold", 34)
-    c.drawString(20*mm, H - 80*mm, "MuleSoft \u2192 MCP")
+    c.drawString(20*mm, H - 80*mm, "API Platform")
     c.setFont("Helvetica", 34)
     c.drawString(20*mm, H - 94*mm, "Migration Package")
 
@@ -230,7 +231,7 @@ def draw_cover(c: canvas.Canvas):
     # Footer
     c.setFillColor(colors.HexColor("#504e48"))
     c.setFont("Helvetica", 8)
-    c.drawString(20*mm, 14*mm, "Confidential \u2014 Internal Use Only")
+    c.drawString(20*mm, 14*mm, "Confidential — Internal Use Only")
     c.drawRightString(W - 20*mm, 14*mm, "Page 1")
 
 
@@ -252,7 +253,7 @@ def draw_doc_footer(c: canvas.Canvas, title: str):
     c.line(20*mm, 16*mm, W - 20*mm, 16*mm)
     c.setFillColor(MUTED)
     c.setFont("Helvetica", 8)
-    c.drawString(20*mm, 10*mm, "Confidential \u2014 Internal Use Only")
+    c.drawString(20*mm, 10*mm, "Confidential — Internal Use Only")
     c.drawCentredString(W / 2, 10*mm, title)
 
 
@@ -310,10 +311,10 @@ def draw_section(c: canvas.Canvas, heading: str, body: str,
 # ── Main builder ─────────────────────────────────────────────────────────────
 def build_pdf():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    c = canvas.Canvas(str(OUTPUT_FILE), pagesize=A4)    
-    c.setTitle("MuleSoft → MCP Migration Package")
+    c = canvas.Canvas(str(OUTPUT_FILE), pagesize=A4)
+    c.setTitle("API Platform Migration Package")
     c.setAuthor("Enterprise Architecture Team")
-    c.setSubject("MuleSoft to MCP Migration")
+    c.setSubject("Legacy Platform to Modern Integration Migration")
 
     # Cover
     draw_cover(c)
