@@ -38,11 +38,6 @@ _PAGE_MARKER_RE = re.compile(r"^Page\s+\d+$", re.IGNORECASE)
 _PAGE_ONE_OF_RE = re.compile(r"\bPage\s*1\s*of\s*\d+\b", re.IGNORECASE)
 _INVALID_FILENAME_RE = re.compile(r'[<>:"/\\|?*]+')
 _WHITESPACE_RE = re.compile(r"\s+")
-_FORM_LIKE_START_RE = re.compile(
-    r"^(ODOMETER DISCLOSURE STATEMENT|ASSIGNMENT OF CREDIT CONTRACT|DT\s+\d+/\d+|FORM NO\.)",
-    re.IGNORECASE,
-)
-
 
 def _normalize_metadata(raw_metadata: Any) -> dict[str, Any]:
     if raw_metadata is None:
@@ -112,17 +107,6 @@ def _detect_starts(page_texts: list[str]) -> list[int]:
         if not text:
             continue
         if _PAGE_ONE_OF_RE.search(text):
-            starts.append(idx)
-
-    # fallback: common form/document headers (except page 0 already included later)
-    for idx, text in enumerate(page_texts):
-        if idx == 0 or not text:
-            continue
-        lines = _page_lines(text)
-        if not lines:
-            continue
-        first = lines[0]
-        if _FORM_LIKE_START_RE.search(first):
             starts.append(idx)
 
     starts = sorted(set(starts))

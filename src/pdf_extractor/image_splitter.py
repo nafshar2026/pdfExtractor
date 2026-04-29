@@ -1,4 +1,4 @@
-"""Image-based PDF splitting using PaddleOCR title and continuation detection."""
+"""Unified PDF splitting: text extraction for digital pages, PaddleOCR for scanned pages."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from pypdf import PdfReader, PdfWriter
 logging.getLogger("ppocr").setLevel(logging.ERROR)
 
 from .extractor import (
-    _detect_starts,
+    _DOC_MARKER_RE,
     _extract_title,
     _page_lines,
     _sanitize_filename,
@@ -29,6 +29,14 @@ _TITLE_MAX_CHARS = 60
 _TOP_STRIP_FRACTION = 0.25
 _BOTTOM_STRIP_FRACTION = 0.15
 _TEXT_PAGE_MIN_CHARS = 50
+
+# Patterns used by _extract_text_title to skip non-title ALL-CAPS lines.
+_TEXT_TITLE_SKIP_RE = re.compile(
+    r"FORM\s+NO\.|[:(#@©()]|\bLLC\b|\bINC\b|\bCORP\b|\bLTD\b|\bINCORPORATED\b",
+    re.IGNORECASE,
+)
+# "A. " or "1. " style section headers within a document body.
+_TEXT_TITLE_SECTION_RE = re.compile(r"^([A-Za-z]|\d+)\.\s")
 
 _ocr_instance: PaddleOCR | None = None
 
@@ -152,7 +160,106 @@ def _page_to_pil(pdf_page) -> Image.Image | None:
     return best
 
 
-def analyze_page(pdf_page) -> PageSignal:
+def _extract_text_title(lines: list[str], *, prefer_last: bool = False) -> str | None:
+    """Return an ALL-CAPS document title from the first half of page lines.
+
+    prefer_last=False (default): returns the *first* qualifying candidate — correct
+    for standalone pages where the title is the leading ALL-CAPS line.
+
+    prefer_last=True: returns the *last* qualifying candidate in the first half —
+    needed for complex forms (e.g. Retail Installment Contracts) where pypdf reads
+    a FEDERAL TRUTH-IN-LENDING DISCLOSURES box before the actual contract name.
+    Use this when a "Page 1 of N" marker confirms we are on the first page of a
+    multi-page form.
+    """
+    half = max(len(lines) // 2, 10)
+    result: str | None = None
+    for line in lines[:half]:
+        stripped = line.rstrip("*").strip()
+        if len(stripped) < 4 or len(stripped) > _TITLE_MAX_CHARS:
+            continue
+        if stripped.endswith("."):
+            continue
+        # Skip non-ASCII lines — bilingual forms duplicate titles in a second language
+        # with accented/encoded characters that produce garbled filenames.
+        if any(ord(c) > 127 for c in stripped):
+            continue
+        if _TEXT_TITLE_SKIP_RE.search(stripped):
+            continue
+        if _TEXT_TITLE_SECTION_RE.match(stripped):
+            continue
+        if _DOC_MARKER_RE.search(stripped):
+            continue
+        words = stripped.split()
+        if not (3 <= len(words) <= 8):
+            continue
+        # Address lines start with a house number (all-digit first token).
+        if words[0].isdigit():
+            continue
+        # Must have at least one word with ≥3 alphabetic characters (rules out "DT 5/23").
+        if not any(sum(c.isalpha() for c in w) >= 3 for w in words):
+            continue
+        # Addresses and phone numbers have ≥7 digits.
+        if sum(c.isdigit() for c in stripped) >= 7:
+            continue
+        if stripped.upper() == stripped and any(c.isalpha() for c in stripped):
+            if prefer_last:
+                result = stripped  # keep scanning — last match wins
+            else:
+                return _sanitize_filename(stripped)  # first match wins
+    return _sanitize_filename(result) if result else None
+
+
+def _analyze_text_page(text: str) -> PageSignal:
+    """Analyze a digitally-extracted text page for document boundary signals."""
+    lines = _page_lines(text)
+
+    # DOCUMENT N OF N marker → explicit boundary embedded by the document assembly system.
+    if _DOC_MARKER_RE.search(text):
+        marker_idx = next(
+            (i for i, ln in enumerate(lines) if _DOC_MARKER_RE.search(ln)), -1
+        )
+        raw_title = _extract_title(lines, marker_idx, "")
+        return PageSignal(
+            classification="NEW_DOC",
+            title_text=raw_title or None,
+            page_num_in_doc=1,
+        )
+
+    # Page N of M — search the full text; forms place this in headers, footers, or
+    # sidebars, so restricting to the last N lines causes misses.
+    for line in lines:
+        m = _CONTINUATION_RE.search(line)
+        if m:
+            page_num = int(m.group(1))
+            total = int(m.group(2))
+            if page_num > 1:
+                return PageSignal(
+                    classification="CONTINUATION",
+                    title_text=None,
+                    page_num_in_doc=page_num,
+                    total_pages_in_doc=total,
+                )
+            if page_num == 1:
+                # prefer_last: complex forms have disclosure boxes before the contract name
+                title = _extract_text_title(lines, prefer_last=True)
+                return PageSignal(
+                    classification="NEW_DOC",
+                    title_text=title,
+                    page_num_in_doc=1,
+                    total_pages_in_doc=total if total > 1 else None,
+                )
+
+    # No explicit page markers — a detectable title signals a new document;
+    # no title means this page belongs to whatever came before.
+    title = _extract_text_title(lines)
+    if title:
+        return PageSignal(classification="NEW_DOC", title_text=title, page_num_in_doc=None)
+    return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
+
+
+def _analyze_image_page(pdf_page) -> PageSignal:
+    """Analyze a scanned/image page using PaddleOCR."""
     pil_image = _page_to_pil(pdf_page)
     if pil_image is None:
         return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
@@ -166,10 +273,6 @@ def analyze_page(pdf_page) -> PageSignal:
     bottom_result = ocr.ocr(np.array(bottom_strip))
     bottom_texts = _extract_ocr_texts(bottom_result)
 
-    # Scan footer for "Page N of M".
-    # N > 1  → CONTINUATION (belongs to the previous document).
-    # N == 1 → start of a new document; remember total so we can carry it forward
-    #           even when no title is detectable in the top strip.
     page_one_total: int | None = None
     for text in bottom_texts:
         m = _CONTINUATION_RE.search(text)
@@ -198,8 +301,6 @@ def analyze_page(pdf_page) -> PageSignal:
             total_pages_in_doc=page_one_total,
         )
 
-    # "Page 1 of N" in the footer is enough to declare a new document even when
-    # OCR cannot find a title — better than silently merging into the previous doc.
     if page_one_total is not None:
         return PageSignal(
             classification="NEW_DOC",
@@ -211,6 +312,18 @@ def analyze_page(pdf_page) -> PageSignal:
     return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
 
 
+def analyze_page(pdf_page) -> PageSignal:
+    """Unified page analyzer: text extraction for digital pages, OCR for scanned pages.
+
+    The boundary signals (Page N of M, DOCUMENT N OF N) are structural and apply
+    regardless of whether the page content is digitally encoded or image-scanned.
+    """
+    text = (pdf_page.extract_text() or "").strip()
+    if len(text) >= _TEXT_PAGE_MIN_CHARS:
+        return _analyze_text_page(text)
+    return _analyze_image_page(pdf_page)
+
+
 def _group_image_pages(
     signals: list[tuple[int, PageSignal]],
 ) -> list[list[int]]:
@@ -219,12 +332,10 @@ def _group_image_pages(
 
     groups: list[list[int]] = []
     current: list[int] = []
-    current_total: int | None = None  # "of N" from the active document's page footer
+    current_total: int | None = None
 
     for abs_idx, signal in signals:
         if signal.classification == "CONTINUATION":
-            # If the "of N" total changes, this footer belongs to a different
-            # document — split here even though there is no explicit NEW_DOC signal.
             if (current and
                     current_total is not None and
                     signal.total_pages_in_doc is not None and
@@ -255,19 +366,6 @@ def _group_image_pages(
 
 
 def _sanitize_image_title(title: str) -> str:
-    """Sanitize a document title into a safe filename stem.
-
-    - Removes non-alphanumeric/non-dash characters
-    - Replaces spaces with underscores
-    - Strips leading/trailing underscores
-    - Returns "Untitled" for empty result
-
-    Args:
-        title: Raw title text extracted from OCR
-
-    Returns:
-        Safe filename stem (e.g., "ST-556_State_Tax")
-    """
     cleaned = re.sub(r"[^\w\s-]", "", title).strip()
     cleaned = re.sub(r"\s+", "_", cleaned).strip("_")
     return cleaned or "Untitled"
@@ -280,24 +378,6 @@ def _write_image_group(
     out_dir: Path,
     used_names: dict[str, int],
 ) -> Path:
-    """Extract and write a group of pages to a PDF.
-
-    Names the output based on:
-    1. The title from the first page's PageSignal (if present)
-    2. Fallback: "pages_X-Y" (1-based page numbers)
-
-    Handles duplicate names by appending " (2)", " (3)", etc.
-
-    Args:
-        reader: Source PDF reader
-        group: List of absolute page indices to extract
-        signals: Dict mapping page index to PageSignal
-        out_dir: Output directory Path
-        used_names: Dict tracking name usage counts (modified in-place)
-
-    Returns:
-        Path to the written PDF file
-    """
     first_idx = group[0]
     signal = signals.get(first_idx)
     raw_title = signal.title_text if signal and signal.title_text else None
@@ -323,116 +403,13 @@ def _write_image_group(
     return destination
 
 
-def _split_text_run(
-    reader: PdfReader,
-    all_page_texts: list[str],
-    start: int,
-    end: int,
-    out_dir: Path,
-    used_names: dict[str, int],
-) -> list[Path]:
-    """Split a run of pages by text-based document boundaries.
-
-    Detects document starts within the slice using _detect_starts (which works on local indices),
-    then adjusts to absolute page indices when writing to the PDF.
-
-    Args:
-        reader: Source PDF reader
-        all_page_texts: Full list of page texts (indexed 0 to len-1)
-        start: Start index (inclusive) into all_page_texts
-        end: End index (exclusive) into all_page_texts
-        out_dir: Output directory Path
-        used_names: Dict tracking name usage counts (modified in-place)
-
-    Returns:
-        List of Paths to written PDF files
-    """
-    run_texts = all_page_texts[start:end]
-    local_starts = _detect_starts(run_texts)
-
-    written: list[Path] = []
-    for i, local_start in enumerate(local_starts):
-        local_end = local_starts[i + 1] if i + 1 < len(local_starts) else len(run_texts)
-        if all(not run_texts[j].strip() for j in range(local_start, local_end)):
-            continue
-
-        first_text = run_texts[local_start]
-        lines = _page_lines(first_text)
-        title = _extract_title(lines, -1, f"Document {len(written) + 1}")  # -1: no DOCUMENT marker index in this context
-        base_name = _sanitize_filename(title)
-
-        used_names[base_name] = used_names.get(base_name, 0) + 1
-        suffix = "" if used_names[base_name] == 1 else f" ({used_names[base_name]})"
-        destination = out_dir / f"{base_name}{suffix}.pdf"
-
-        writer = PdfWriter()
-        for page_num in range(start + local_start, start + local_end):
-            writer.add_page(reader.pages[page_num])
-
-        with destination.open("wb") as handle:
-            writer.write(handle)
-
-        written.append(destination)
-
-    return written
-
-
-def _split_image_run(
-    reader: PdfReader,
-    start: int,
-    end: int,
-    out_dir: Path,
-    used_names: dict[str, int],
-) -> list[Path]:
-    """Split a run of pages by image-based signals (titles and page numbers).
-
-    Analyzes each page in the range [start, end) to detect document boundaries,
-    groups them by _group_image_pages, and writes each group as a separate PDF.
-
-    Args:
-        reader: Source PDF reader
-        start: Start index (inclusive) into reader.pages
-        end: End index (exclusive) into reader.pages
-        out_dir: Output directory Path
-        used_names: Dict tracking name usage counts (modified in-place)
-
-    Returns:
-        List of Paths to written PDF files
-    """
-    signals_list: list[tuple[int, PageSignal]] = []
-    signals_dict: dict[int, PageSignal] = {}
-
-    for abs_idx in range(start, end):
-        signal = analyze_page(reader.pages[abs_idx])
-        signals_list.append((abs_idx, signal))
-        signals_dict[abs_idx] = signal
-
-    groups = _group_image_pages(signals_list)
-
-    written: list[Path] = []
-    for group in groups:
-        dest = _write_image_group(reader, group, signals_dict, out_dir, used_names)
-        written.append(dest)
-
-    return written
-
-
 def split_pdf(pdf_path: str | Path, output_dir: str | Path) -> list[Path]:
-    """Unified PDF splitter handling both text and image page runs.
+    """Unified PDF splitter: analyzes every page for document boundary signals,
+    groups them, and writes one PDF per logical document.
 
-    Classifies each page as "text" (≥50 chars) or "image" (<50 chars) by extracting text,
-    groups consecutive same-mode pages into runs, and delegates to _split_text_run or
-    _split_image_run accordingly.
-
-    Args:
-        pdf_path: Path to input PDF file
-        output_dir: Path to output directory (created if not exists)
-
-    Returns:
-        List of Paths to written PDF files (in order)
-
-    Raises:
-        FileNotFoundError: If pdf_path does not exist
+    Text pages (≥50 extracted chars) are analyzed via pattern matching on the
+    extracted text.  Image/scanned pages fall back to PaddleOCR.  The grouping
+    logic is identical regardless of page type.
     """
     path = Path(pdf_path)
     out_dir = Path(output_dir)
@@ -442,31 +419,22 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path) -> list[Path]:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     reader = PdfReader(str(path))
-    total = len(reader.pages)
 
-    page_texts = [(reader.pages[i].extract_text() or "").strip() for i in range(total)]
-    page_is_text = [len(t) >= _TEXT_PAGE_MIN_CHARS for t in page_texts]
+    signals_list: list[tuple[int, PageSignal]] = []
+    signals_dict: dict[int, PageSignal] = {}
 
-    runs: list[tuple[str, int, int]] = []
-    if total > 0:
-        start = 0
-        mode = "text" if page_is_text[0] else "image"
-        for i in range(1, total):
-            cur_mode = "text" if page_is_text[i] else "image"
-            if cur_mode != mode:
-                runs.append((mode, start, i))
-                start = i
-                mode = cur_mode
-        runs.append((mode, start, total))
+    for i in range(len(reader.pages)):
+        signal = analyze_page(reader.pages[i])
+        signals_list.append((i, signal))
+        signals_dict[i] = signal
+
+    groups = _group_image_pages(signals_list)
 
     written: list[Path] = []
     used_names: dict[str, int] = {}
 
-    for run_mode, run_start, run_end in runs:
-        if run_mode == "text":
-            new_docs = _split_text_run(reader, page_texts, run_start, run_end, out_dir, used_names)
-        else:
-            new_docs = _split_image_run(reader, run_start, run_end, out_dir, used_names)
-        written.extend(new_docs)
+    for group in groups:
+        dest = _write_image_group(reader, group, signals_dict, out_dir, used_names)
+        written.append(dest)
 
     return written

@@ -325,14 +325,18 @@ def test_write_image_group_duplicate_name_gets_suffix(tmp_path):
 
 
 from unittest.mock import patch, MagicMock
-from pdf_extractor.image_splitter import _split_image_run, _split_text_run
+from pdf_extractor.image_splitter import _analyze_text_page, _extract_text_title
 
 
-def test_split_image_run_produces_one_file_per_group(tmp_path):
-    reader = _make_real_reader(tmp_path, num_pages=4)
+def test_split_pdf_groups_signals_into_documents(tmp_path):
+    """split_pdf groups all pages by analyze_page signals into separate PDFs."""
+    source = tmp_path / "source.pdf"
+    w = PdfWriter()
+    for _ in range(4):
+        w.add_blank_page(width=612, height=792)
+    with source.open("wb") as f:
+        w.write(f)
     out_dir = tmp_path / "out"
-    out_dir.mkdir()
-    used_names: dict = {}
 
     signals = [
         PageSignal("NEW_DOC", "Doc One", None),
@@ -342,44 +346,146 @@ def test_split_image_run_produces_one_file_per_group(tmp_path):
     ]
 
     with patch("pdf_extractor.image_splitter.analyze_page", side_effect=signals):
-        written = _split_image_run(reader, 0, 4, out_dir, used_names)
+        written = split_pdf(source, out_dir)
 
     assert len(written) == 2
     assert written[0].name == "Doc_One.pdf"
     assert written[1].name == "Doc_Two.pdf"
-    result_0 = PdfReader(str(written[0]))
-    assert len(result_0.pages) == 2
-    result_1 = PdfReader(str(written[1]))
-    assert len(result_1.pages) == 2
 
 
-def test_split_text_run_splits_by_markers(tmp_path):
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
+def test_analyze_text_page_doc_marker_is_new_doc():
+    """DOCUMENT N OF N marker → NEW_DOC with title from the following line."""
+    text = "DOCUMENT 1 OF 2\nApplicable Law\nsome content here to exceed fifty chars minimum threshold"
+    sig = _analyze_text_page(text)
+    assert sig.classification == "NEW_DOC"
+    assert sig.title_text == "Applicable Law"
+    assert sig.page_num_in_doc == 1
 
-    writer = PdfWriter()
-    writer.add_blank_page(width=612, height=792)
-    writer.add_blank_page(width=612, height=792)
-    writer.add_blank_page(width=612, height=792)
-    pdf_path = tmp_path / "source.pdf"
-    with pdf_path.open("wb") as f:
-        writer.write(f)
-    reader = PdfReader(str(pdf_path))
 
-    page_texts = [
-        "DOCUMENT 1 OF 2\nApplicable Law\nsome content here to exceed fifty chars minimum",
-        "continued content page two here with enough text to count as substantial",
-        "DOCUMENT 2 OF 2\nOdometer Disclosure Statement\ncontent here enough chars",
-    ]
-    used_names: dict = {}
+def test_analyze_text_page_page_1_of_n_is_new_doc():
+    """'Page 1 of N' in the footer → NEW_DOC carrying total_pages_in_doc."""
+    text = "Retail Purchase Agreement\nsome body content here\nPage 1 of 3"
+    sig = _analyze_text_page(text)
+    assert sig.classification == "NEW_DOC"
+    assert sig.total_pages_in_doc == 3
+    assert sig.page_num_in_doc == 1
 
-    written = _split_text_run(reader, page_texts, 0, 3, out_dir, used_names)
 
-    assert len(written) == 2
-    r0 = PdfReader(str(written[0]))
-    assert len(r0.pages) == 2
-    r1 = PdfReader(str(written[1]))
-    assert len(r1.pages) == 1
+def test_analyze_text_page_continuation():
+    """'Page N of M' (N > 1) in the footer → CONTINUATION."""
+    text = "continued body content on page two here\nPage 2 of 3"
+    sig = _analyze_text_page(text)
+    assert sig.classification == "CONTINUATION"
+    assert sig.page_num_in_doc == 2
+    assert sig.total_pages_in_doc == 3
+
+
+def test_analyze_text_page_page_num_anywhere_in_text():
+    """'Page N of M' in the header area (not footer) must still be detected."""
+    text = "LAW 553-IL-ARB-ea 8/22 v1    Page 1 of 6\nBody content here for the contract text"
+    sig = _analyze_text_page(text)
+    assert sig.classification == "NEW_DOC"
+    assert sig.page_num_in_doc == 1
+    assert sig.total_pages_in_doc == 6
+
+
+def test_analyze_text_page_continuation_page_num_in_header():
+    """'Page 5 of 6' appearing on the first line is a CONTINUATION signal."""
+    text = "LAW 553-IL-ARB-ea 8/22 v1    Page 5 of 6\nArbitration provision content follows here"
+    sig = _analyze_text_page(text)
+    assert sig.classification == "CONTINUATION"
+    assert sig.page_num_in_doc == 5
+    assert sig.total_pages_in_doc == 6
+
+
+def test_analyze_text_page_allcaps_title_no_markers_is_new_doc():
+    """ALL-CAPS title with no page markers → NEW_DOC."""
+    text = "FORM NO. LAWIL-RATECAP (Rev. 8/22)\nThe information on this form is part of your contract.\nDISCLOSURE OF 36% RATE CAP\nFurther content of the disclosure form goes here."
+    sig = _analyze_text_page(text)
+    assert sig.classification == "NEW_DOC"
+    assert "DISCLOSURE" in (sig.title_text or "")
+
+
+def test_analyze_text_page_no_markers_is_ambiguous():
+    """Text page with no markers and no detectable title → AMBIGUOUS."""
+    text = "DT 5/23\nsome form content without any page numbering markers here"
+    sig = _analyze_text_page(text)
+    assert sig.classification == "AMBIGUOUS"
+
+
+def test_extract_text_title_picks_last_in_first_half():
+    """When multiple ALL-CAPS candidates exist, the last one in the first half wins.
+
+    The page has 20 lines so half=10.  RETAIL INSTALLMENT CONTRACT is at line 9
+    (last candidate in first half); FOR USED VEHICLES ONLY is at line 11 (second
+    half) and must be excluded.
+    """
+    padding = ["body text line here"] * 3
+    lines = (
+        padding
+        + ["FEDERAL DISCLOSURE REQUIREMENTS"]   # line 4 — first half candidate
+        + padding
+        + ["RETAIL INSTALLMENT CONTRACT"]        # line 8 — last first-half candidate
+        + ["body content line here"]              # line 9
+        + ["body content line here"]              # line 10  ← half boundary
+        + ["FOR USED VEHICLES ONLY"]              # line 11 — second half, must be excluded
+        + padding
+        + padding                                  # total 20 lines
+    )
+    title = _extract_text_title(lines, prefer_last=True)
+    # _sanitize_filename keeps spaces; underscores are applied later by _sanitize_image_title
+    assert title == "RETAIL INSTALLMENT CONTRACT"
+
+
+def test_extract_text_title_filters_addresses():
+    """Lines with ≥7 digits (addresses, phone numbers) must be excluded."""
+    lines = ["4525 TURNBERRY DR 60133ILHANOVER PARK"]
+    assert _extract_text_title(lines) is None
+
+
+def test_extract_text_title_filters_short_lines():
+    """ALL-CAPS lines with < 3 words are excluded (section labels, form IDs)."""
+    lines = ["DT 5/23", "APPLICABLE LAW"]
+    assert _extract_text_title(lines) is None
+
+
+def test_extract_text_title_filters_corporate_suffixes():
+    """Company names ending with LLC/INC are not document titles."""
+    lines = ["ZEIGLER CHRYSLER DODGE JEEP LLC"]
+    assert _extract_text_title(lines) is None
+
+
+def test_extract_text_title_filters_non_ascii():
+    """Lines with non-ASCII characters (bilingual duplicates) are excluded."""
+    lines = ["DIVULGACIÓN DE LA TASA MAXIMA DEL 36"]
+    assert _extract_text_title(lines) is None
+
+
+def test_extract_text_title_first_wins_by_default():
+    """Without prefer_last, the first qualifying candidate is returned."""
+    lines = ["ODOMETER DISCLOSURE STATEMENT", "WARNING ODOMETER DISCREPENCY"]
+    assert _extract_text_title(lines) == "ODOMETER DISCLOSURE STATEMENT"
+
+
+def test_extract_text_title_prefer_last_picks_later():
+    """prefer_last=True skips earlier candidates in favour of later ones."""
+    lines = ["FEDERAL TRUTH IN LENDING DISCLOSURES", "RETAIL INSTALLMENT CONTRACT"]
+    assert _extract_text_title(lines, prefer_last=True) == "RETAIL INSTALLMENT CONTRACT"
+
+
+def test_analyze_text_page_doc_marker_continuation_stays_together(tmp_path):
+    """Multiple pages sharing 'DOCUMENT 1 OF 2' header stay in one group."""
+    page1 = "DOCUMENT 1 OF 2\nDT 5/23\nfirst page content here with enough chars to count"
+    page2 = "DOCUMENT 1 OF 2\nDT 5/23\ncontinued form content on second page of same document"
+    page3 = "DOCUMENT 2 OF 2\nOdometer Disclosure Statement\ncontent on a new document here"
+
+    sig1 = _analyze_text_page(page1)
+    sig2 = _analyze_text_page(page2)
+    sig3 = _analyze_text_page(page3)
+
+    from pdf_extractor.image_splitter import _group_image_pages
+    groups = _group_image_pages([(0, sig1), (1, sig2), (2, sig3)])
+    assert len(groups) == 3  # each DOCUMENT N OF N starts a new group
 
 
 from pdf_extractor.image_splitter import split_pdf
