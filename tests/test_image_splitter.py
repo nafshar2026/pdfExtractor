@@ -43,11 +43,15 @@ from PIL import Image as PILImage
 from pdf_extractor.image_splitter import analyze_page
 
 
-def _make_ocr_result(texts: list[str]) -> list:
-    """Build a PaddleOCR-format result from a list of text strings."""
+def _make_ocr_result(texts: list[str], height: int = 30) -> list:
+    """Build a PaddleOCR-format result from a list of text strings.
+
+    height controls the bounding-box pixel height, which drives _select_best_title
+    scoring.  Default 30px × 2.0 multiplier = score 60 ≥ _MIN_TITLE_SCORE (50).
+    """
     lines = []
     for text in texts:
-        bbox = [[0, 0], [100, 0], [100, 20], [0, 20]]
+        bbox = [[0, 0], [100, 0], [100, height], [0, height]]
         lines.append([bbox, (text, 0.99)])
     return [lines]
 
@@ -114,25 +118,57 @@ def test_analyze_page_no_images():
     assert sig.title_text is None
 
 
-def test_analyze_page_page_1_of_n_is_not_continuation():
-    """'Page 1 of N' must NOT trigger CONTINUATION — only X > 1 does."""
+def test_analyze_page_page_1_of_n_with_title():
+    """'Page 1 of N' with a detectable title → NEW_DOC carrying total_pages."""
     page = _make_image_page(_blank_image())
     mock_ocr = MagicMock()
     mock_ocr.ocr.side_effect = [
-        _make_ocr_result(["Page 1 of 6"]),    # bottom: page 1 of 6 → ignored
-        _make_ocr_result(["Title Here"]),      # top: short title → NEW_DOC
+        _make_ocr_result(["Page 1 of 6"]),    # bottom: page 1 of 6
+        _make_ocr_result(["Title Here"]),      # top: title found
     ]
     with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
         sig = analyze_page(page)
     assert sig.classification == "NEW_DOC"
     assert sig.title_text == "Title Here"
+    assert sig.page_num_in_doc == 1
+    assert sig.total_pages_in_doc == 6
+
+
+def test_analyze_page_page_1_of_n_no_title_is_new_doc():
+    """'Page 1 of N' with no detectable title must still be NEW_DOC, not AMBIGUOUS."""
+    page = _make_image_page(_blank_image())
+    mock_ocr = MagicMock()
+    mock_ocr.ocr.side_effect = [
+        _make_ocr_result(["Page 1 of 4"]),  # bottom: page 1 of 4
+        _make_ocr_result([]),               # top: nothing usable
+    ]
+    with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
+        sig = analyze_page(page)
+    assert sig.classification == "NEW_DOC"
+    assert sig.title_text is None
+    assert sig.page_num_in_doc == 1
+    assert sig.total_pages_in_doc == 4
+
+
+def test_analyze_page_continuation_carries_total():
+    """CONTINUATION signal must carry total_pages_in_doc from the footer."""
+    page = _make_image_page(_blank_image())
+    mock_ocr = MagicMock()
+    mock_ocr.ocr.side_effect = [
+        _make_ocr_result(["Page 3 of 6"]),
+    ]
+    with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
+        sig = analyze_page(page)
+    assert sig.classification == "CONTINUATION"
+    assert sig.page_num_in_doc == 3
+    assert sig.total_pages_in_doc == 6
 
 
 from pdf_extractor.image_splitter import _group_image_pages
 
 
-def _sig(cls, title=None, page_num=None):
-    return PageSignal(classification=cls, title_text=title, page_num_in_doc=page_num)
+def _sig(cls, title=None, page_num=None, total=None):
+    return PageSignal(classification=cls, title_text=title, page_num_in_doc=page_num, total_pages_in_doc=total)
 
 
 def test_group_single_new_doc():
@@ -187,6 +223,29 @@ def test_group_orphan_continuation_forms_own_group():
 
 def test_group_empty_input():
     assert _group_image_pages([]) == []
+
+
+def test_group_continuation_total_change_splits():
+    """CONTINUATION pages whose 'of N' total changes must start a new group."""
+    signals = [
+        (0, _sig("NEW_DOC", "Doc A", total=3)),
+        (1, _sig("CONTINUATION", page_num=2, total=3)),
+        (2, _sig("CONTINUATION", page_num=3, total=3)),
+        (3, _sig("CONTINUATION", page_num=2, total=4)),  # different total → new doc
+        (4, _sig("CONTINUATION", page_num=3, total=4)),
+        (5, _sig("CONTINUATION", page_num=4, total=4)),
+    ]
+    assert _group_image_pages(signals) == [[0, 1, 2], [3, 4, 5]]
+
+
+def test_group_continuation_same_total_stays_together():
+    """CONTINUATION pages sharing the same 'of N' must stay in one group."""
+    signals = [
+        (0, _sig("NEW_DOC", "Doc A", total=3)),
+        (1, _sig("CONTINUATION", page_num=2, total=3)),
+        (2, _sig("CONTINUATION", page_num=3, total=3)),
+    ]
+    assert _group_image_pages(signals) == [[0, 1, 2]]
 
 
 from pdf_extractor.image_splitter import _sanitize_image_title

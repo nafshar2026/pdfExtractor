@@ -24,7 +24,7 @@ from .extractor import (
     _sanitize_filename,
 )
 
-_CONTINUATION_RE = re.compile(r"Page\s+(\d+)\s+of\s+\d+", re.IGNORECASE)
+_CONTINUATION_RE = re.compile(r"Page\s+(\d+)\s+of\s+(\d+)", re.IGNORECASE)
 _TITLE_MAX_CHARS = 60
 _TOP_STRIP_FRACTION = 0.25
 _BOTTOM_STRIP_FRACTION = 0.15
@@ -45,6 +45,7 @@ class PageSignal:
     classification: Literal["NEW_DOC", "CONTINUATION", "AMBIGUOUS"]
     title_text: str | None
     page_num_in_doc: int | None
+    total_pages_in_doc: int | None = None
 
 
 def _extract_ocr_texts(ocr_result: list | None) -> list[str]:
@@ -165,14 +166,25 @@ def analyze_page(pdf_page) -> PageSignal:
     bottom_result = ocr.ocr(np.array(bottom_strip))
     bottom_texts = _extract_ocr_texts(bottom_result)
 
+    # Scan footer for "Page N of M".
+    # N > 1  → CONTINUATION (belongs to the previous document).
+    # N == 1 → start of a new document; remember total so we can carry it forward
+    #           even when no title is detectable in the top strip.
+    page_one_total: int | None = None
     for text in bottom_texts:
         m = _CONTINUATION_RE.search(text)
-        if m and int(m.group(1)) > 1:
-            return PageSignal(
-                classification="CONTINUATION",
-                title_text=None,
-                page_num_in_doc=int(m.group(1)),
-            )
+        if m:
+            page_num = int(m.group(1))
+            total = int(m.group(2))
+            if page_num > 1:
+                return PageSignal(
+                    classification="CONTINUATION",
+                    title_text=None,
+                    page_num_in_doc=page_num,
+                    total_pages_in_doc=total,
+                )
+            if page_num == 1 and total > 1:
+                page_one_total = total
 
     top_strip = pil_image.crop((0, 0, width, int(height * _TOP_STRIP_FRACTION)))
     top_result = ocr.ocr(np.array(top_strip))
@@ -182,7 +194,18 @@ def analyze_page(pdf_page) -> PageSignal:
         return PageSignal(
             classification="NEW_DOC",
             title_text=best_title,
-            page_num_in_doc=None,
+            page_num_in_doc=1 if page_one_total else None,
+            total_pages_in_doc=page_one_total,
+        )
+
+    # "Page 1 of N" in the footer is enough to declare a new document even when
+    # OCR cannot find a title — better than silently merging into the previous doc.
+    if page_one_total is not None:
+        return PageSignal(
+            classification="NEW_DOC",
+            title_text=None,
+            page_num_in_doc=1,
+            total_pages_in_doc=page_one_total,
         )
 
     return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
@@ -196,22 +219,34 @@ def _group_image_pages(
 
     groups: list[list[int]] = []
     current: list[int] = []
+    current_total: int | None = None  # "of N" from the active document's page footer
 
     for abs_idx, signal in signals:
         if signal.classification == "CONTINUATION":
-            if current:
+            # If the "of N" total changes, this footer belongs to a different
+            # document — split here even though there is no explicit NEW_DOC signal.
+            if (current and
+                    current_total is not None and
+                    signal.total_pages_in_doc is not None and
+                    signal.total_pages_in_doc != current_total):
+                groups.append(current)
+                current = [abs_idx]
+            elif current:
                 current.append(abs_idx)
             else:
                 current = [abs_idx]
+            current_total = signal.total_pages_in_doc
         elif signal.classification == "NEW_DOC":
             if current:
                 groups.append(current)
             current = [abs_idx]
+            current_total = signal.total_pages_in_doc
         else:  # AMBIGUOUS
             if current:
                 current.append(abs_idx)
             else:
                 current = [abs_idx]
+            current_total = None
 
     if current:
         groups.append(current)
