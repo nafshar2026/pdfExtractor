@@ -24,10 +24,20 @@ from .extractor import (
     _sanitize_filename,
 )
 
+# Matches "Page 3 of 6" in any page type — used to identify continuations and first pages.
 _CONTINUATION_RE = re.compile(r"Page\s+(\d+)\s+of\s+(\d+)", re.IGNORECASE)
+
+# OCR title candidates longer than this are likely disclaimers or body text, not titles.
 _TITLE_MAX_CHARS = 60
+
+# Fraction of page height scanned from the top for title detection on image pages.
 _TOP_STRIP_FRACTION = 0.25
+
+# Fraction of page height scanned from the bottom for "Page N of M" on image pages.
 _BOTTOM_STRIP_FRACTION = 0.15
+
+# A page with at least this many extracted characters is treated as a digital text page;
+# fewer characters means the page is blank or image-only and falls back to OCR.
 _TEXT_PAGE_MIN_CHARS = 50
 
 # Patterns used by _extract_text_title to skip non-title ALL-CAPS lines.
@@ -38,10 +48,17 @@ _TEXT_TITLE_SKIP_RE = re.compile(
 # "A. " or "1. " style section headers within a document body.
 _TEXT_TITLE_SECTION_RE = re.compile(r"^([A-Za-z]|\d+)\.\s")
 
+# Module-level singleton; avoids reloading the ~200 MB PaddleOCR model on every page.
 _ocr_instance: PaddleOCR | None = None
 
 
 def _get_ocr() -> PaddleOCR:
+    """Return the process-wide PaddleOCR singleton, initialising it on first call.
+
+    Angle classification is disabled because deal-jacket pages are always upright.
+    Initialisation takes several seconds and loads ~200 MB of model weights, so the
+    instance is created once and reused for every subsequent page in the same run.
+    """
     global _ocr_instance
     if _ocr_instance is None:
         _ocr_instance = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
@@ -50,6 +67,26 @@ def _get_ocr() -> PaddleOCR:
 
 @dataclass(slots=True)
 class PageSignal:
+    """Boundary classification for a single PDF page.
+
+    Produced by `analyze_page()` and consumed by `_group_image_pages()` to
+    determine how consecutive pages are grouped into logical documents.
+
+    Attributes:
+        classification:      "NEW_DOC" — this page starts a new logical document.
+                             "CONTINUATION" — this page continues the current document
+                               (a "Page N of M" footer confirmed it is not page 1).
+                             "AMBIGUOUS" — no boundary signal was detected; the page
+                               is attached to whichever document came immediately before.
+        title_text:          Document title extracted from this page, or None.  Only
+                             populated for NEW_DOC pages; used as the output filename.
+        page_num_in_doc:     The page number within its logical document (e.g. 2 for
+                             "Page 2 of 4"), or None when the marker is absent.
+        total_pages_in_doc:  Total page count declared by the "Page N of M" marker, or
+                             None when the marker is absent.  Used by `_group_image_pages`
+                             to detect mid-sequence document switches.
+    """
+
     classification: Literal["NEW_DOC", "CONTINUATION", "AMBIGUOUS"]
     title_text: str | None
     page_num_in_doc: int | None
@@ -57,6 +94,20 @@ class PageSignal:
 
 
 def _extract_ocr_texts(ocr_result: list | None) -> list[str]:
+    """Flatten PaddleOCR output to a plain list of recognised text strings.
+
+    PaddleOCR returns a nested structure:
+      ``[[[[x1,y1],[x2,y2],[x3,y3],[x4,y4]], (text, confidence)], ...]]``
+    This function extracts only the text strings in line order, discarding
+    bounding-box coordinates and confidence scores.
+
+    Args:
+        ocr_result: Raw return value from ``PaddleOCR.ocr()``, or None.
+
+    Returns:
+        Ordered list of recognised text strings.  Empty list if the input is
+        None or if PaddleOCR found nothing on the image strip.
+    """
     if not ocr_result:
         return []
     page_result = ocr_result[0]
@@ -69,6 +120,10 @@ def _extract_ocr_texts(ocr_result: list | None) -> list[str]:
     return texts
 
 
+# Minimum score (box_height × word-count multiplier) a candidate must reach to be
+# accepted as a document title.  Candidates below this threshold are treated as
+# column headers or field labels, and the page is classified as AMBIGUOUS so it
+# merges with the previous document group instead of starting a new one.
 _MIN_TITLE_SCORE = 50.0
 
 
@@ -139,6 +194,20 @@ _logger = logging.getLogger(__name__)
 
 
 def _page_to_pil(pdf_page) -> Image.Image | None:
+    """Extract the dominant embedded image from a PDF page as a PIL Image.
+
+    Many scanned deal-jacket pages embed a single high-resolution scan plus small
+    decorative images (logos, stamps, watermarks).  This function picks the image
+    with the largest pixel area so that incidental graphics do not win over the
+    main page scan.
+
+    Args:
+        pdf_page: A pypdf ``PageObject`` from ``PdfReader.pages``.
+
+    Returns:
+        The largest embedded image converted to RGB, or None if the page contains
+        no decodable image data.
+    """
     images = pdf_page.images
     if not images:
         return None
@@ -327,6 +396,29 @@ def analyze_page(pdf_page) -> PageSignal:
 def _group_image_pages(
     signals: list[tuple[int, PageSignal]],
 ) -> list[list[int]]:
+    """Group per-page signals into lists of page indices, one list per logical document.
+
+    Grouping rules (applied in order):
+
+    - **NEW_DOC**: Close the current group (if any) and start a fresh one.
+    - **CONTINUATION**: Append to the current group.  If ``total_pages_in_doc``
+      changes between consecutive CONTINUATION pages (i.e. the declared total
+      shifts from, say, 4 to 6) a new group is started — this handles back-to-back
+      multi-page forms that share the same "Page N of M" footer style.
+    - **AMBIGUOUS**: Append to the current group, or start a new single-page group
+      if no current group exists yet.
+
+    The first page of the PDF is always covered: if the very first signal is
+    AMBIGUOUS or CONTINUATION, it still initialises a group rather than being dropped.
+
+    Args:
+        signals: Ordered list of ``(absolute_page_index, PageSignal)`` tuples
+                 covering every page in the PDF.
+
+    Returns:
+        List of groups, where each group is a list of zero-based page indices.
+        The groups appear in document order and together cover all input indices.
+    """
     if not signals:
         return []
 
@@ -366,6 +458,19 @@ def _group_image_pages(
 
 
 def _sanitize_image_title(title: str) -> str:
+    """Convert an OCR-extracted title into a valid, filesystem-safe filename stem.
+
+    Strips all characters that are neither word characters, spaces, nor hyphens,
+    then collapses whitespace runs to single underscores.  The result uses
+    underscores (not spaces) to match the style expected by ``_write_image_group``.
+
+    Args:
+        title: Raw title string as returned by ``_select_best_title()``.
+
+    Returns:
+        Sanitized filename stem, e.g. ``"Retail_Installment_Contract"``.
+        Falls back to ``"Untitled"`` for empty or all-punctuation input.
+    """
     cleaned = re.sub(r"[^\w\s-]", "", title).strip()
     cleaned = re.sub(r"\s+", "_", cleaned).strip("_")
     return cleaned or "Untitled"
@@ -378,6 +483,27 @@ def _write_image_group(
     out_dir: Path,
     used_names: dict[str, int],
 ) -> Path:
+    """Write a group of PDF pages to a single output file and return its path.
+
+    The output filename is derived from the title detected on the first page of
+    the group.  When no title is available the name falls back to
+    ``"page_N"`` (single page) or ``"pages_N-M"`` (multi-page range).
+
+    Duplicate base names within the same run are disambiguated by appending
+    ``" (2)"``, ``" (3)"``, etc. — matching the convention used by
+    ``split_pdf_by_internal_documents`` in extractor.py.
+
+    Args:
+        reader:     Open ``PdfReader`` for the source PDF.
+        group:      Ordered list of zero-based page indices belonging to this document.
+        signals:    Map of page index → ``PageSignal`` for title lookup.
+        out_dir:    Directory where the output file will be written.
+        used_names: Mutable counter dict shared across all groups in the same split
+                    run; updated in-place to track name collisions.
+
+    Returns:
+        Path to the written PDF file.
+    """
     first_idx = group[0]
     signal = signals.get(first_idx)
     raw_title = signal.title_text if signal and signal.title_text else None

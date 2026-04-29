@@ -15,6 +15,20 @@ from .image_splitter import split_pdf
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build and return the argument parser for the pdf-extractor CLI.
+
+    Defines the following arguments:
+
+    - ``input_path``         — positional; a PDF file or a directory of PDFs.
+    - ``--output-dir``       — where extracted text/JSON files are written (default: ``output/``).
+    - ``--format``           — ``"text"`` (default) or ``"json"`` for extraction output.
+    - ``--recursive``        — descend into subdirectories when ``input_path`` is a directory.
+    - ``--split-documents``  — split a single PDF into one file per logical document.
+    - ``--split-output-dir`` — destination for split PDFs (default: ``output/split/``).
+
+    Returns:
+        Configured ``ArgumentParser`` instance ready for ``parse_args()``.
+    """
     parser = argparse.ArgumentParser(
         description="Extract text and metadata from PDF files.",
     )
@@ -49,11 +63,39 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _build_output_path(output_dir: Path, source_path: str, output_format: str) -> Path:
+    """Derive the output file path for an extracted document.
+
+    Uses the source PDF's stem (filename without extension) as the output name,
+    appending ``.txt`` or ``.json`` depending on the requested format.
+
+    Args:
+        output_dir:    Directory where the file will be written.
+        source_path:   Absolute path of the source PDF (used for the stem only).
+        output_format: ``"text"`` → ``.txt`` extension; ``"json"`` → ``.json``.
+
+    Returns:
+        Full Path for the output file (directory is not created here).
+    """
     extension = ".txt" if output_format == "text" else ".json"
     return output_dir / f"{Path(source_path).stem}{extension}"
 
 
 def _write_output(document: ExtractedDocument, output_dir: Path, output_format: str) -> Path:
+    """Serialize an extracted document to disk and return the written path.
+
+    Creates ``output_dir`` (including any missing parents) if it does not exist.
+    JSON output is written with 2-space indentation and ASCII-safe encoding so
+    the file is readable in any locale.  Plain-text output writes the concatenated
+    page content directly.
+
+    Args:
+        document:      Populated ``ExtractedDocument`` from ``extract_pdf()``.
+        output_dir:    Destination directory.
+        output_format: ``"text"`` or ``"json"``.
+
+    Returns:
+        Path to the written output file.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     destination = _build_output_path(output_dir, document.source_path, output_format)
 
@@ -69,6 +111,24 @@ def _write_output(document: ExtractedDocument, output_dir: Path, output_format: 
 
 
 def main() -> int:
+    """Entry point for the ``pdf-extractor`` CLI command.
+
+    Two modes of operation:
+
+    **Extraction mode** (default):
+        Extracts text from each discovered PDF and writes one ``.txt`` or ``.json``
+        file per PDF to ``--output-dir``.  Accepts a single file or a directory
+        (optionally recursive via ``--recursive``).
+
+    **Split mode** (``--split-documents``):
+        Requires exactly one input PDF.  Splits it into one PDF per logical document
+        using ``split_pdf()`` from ``image_splitter``.  Output files are written to
+        ``--split-output-dir``.
+
+    Returns:
+        0 on success.  Calls ``parser.error()`` (which exits with status 2) on bad
+        input — no PDFs found, wrong number of files for split mode, etc.
+    """
     parser = build_parser()
     args = parser.parse_args()
 
