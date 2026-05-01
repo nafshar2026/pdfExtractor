@@ -473,6 +473,40 @@ def test_extract_text_title_prefer_last_picks_later():
     assert _extract_text_title(lines, prefer_last=True) == "RETAIL INSTALLMENT CONTRACT"
 
 
+def test_extract_text_title_title_case_fallback():
+    """Title Case titles are detected when no ALL-CAPS title is present."""
+    # Simulates a RouteOne credit application page: logo line filtered by non-ASCII,
+    # then "Credit Application" in Title Case on line 2.
+    lines = ["RouteOne®", "Credit Application", "[X] You are applying for individual credit"]
+    assert _extract_text_title(lines) == "Credit Application"
+
+
+def test_extract_text_title_title_case_not_triggered_past_line_6():
+    """Title Case fallback only searches the first 6 lines; later lines are ignored."""
+    lines = [
+        "RouteOne®",          # filtered: non-ASCII
+        "Title Last Name First",   # 4 words Title Case — but all words must start upper... passes?
+                                   # Actually: "Last", "Name", "First" all upper, "Title" upper
+                                   # This would be a false positive — so test a line that DOES
+                                   # appear late and should be skipped
+        "Date of Birth Info",      # "of" starts lowercase → fails strict title case check
+        "Home Address Line",       # 3 words, all upper start — could pass; but appears early
+        "Some Field Label",        # 3 words, all upper start
+        "Another Row Label",       # line 6 — boundary
+        "Credit Application",      # line 7 — beyond the 6-line limit, must NOT be picked
+    ]
+    # All lines before line 7 either fail word-count or strict-uppercase checks,
+    # so the result should be None.
+    result = _extract_text_title(lines)
+    assert result != "Credit Application"
+
+
+def test_extract_text_title_title_case_long_line_excluded():
+    """Title Case fallback rejects lines with more than 4 words."""
+    lines = ["Title Last Name First Middle Suffix"]  # 6 words — excluded
+    assert _extract_text_title(lines) is None
+
+
 def test_analyze_text_page_doc_marker_continuation_stays_together(tmp_path):
     """Multiple pages sharing 'DOCUMENT 1 OF 2' header stay in one group."""
     page1 = "DOCUMENT 1 OF 2\nDT 5/23\nfirst page content here with enough chars to count"

@@ -230,19 +230,27 @@ def _page_to_pil(pdf_page) -> Image.Image | None:
 
 
 def _extract_text_title(lines: list[str], *, prefer_last: bool = False) -> str | None:
-    """Return an ALL-CAPS document title from the first half of page lines.
+    """Return a document title from the first half of page lines.
 
-    prefer_last=False (default): returns the *first* qualifying candidate — correct
-    for standalone pages where the title is the leading ALL-CAPS line.
+    Two passes are made in priority order:
 
-    prefer_last=True: returns the *last* qualifying candidate in the first half —
-    needed for complex forms (e.g. Retail Installment Contracts) where pypdf reads
-    a FEDERAL TRUTH-IN-LENDING DISCLOSURES box before the actual contract name.
-    Use this when a "Page 1 of N" marker confirms we are on the first page of a
-    multi-page form.
+    **Pass 1 — ALL-CAPS** (primary, searches first half of page):
+    The strongest signal.  Most printed forms put their title in full capitals.
+    prefer_last=False (default): returns the *first* qualifying candidate.
+    prefer_last=True: returns the *last* candidate in the first half — needed for
+    complex forms (e.g. Retail Installment Contracts) where pypdf reads a
+    FEDERAL TRUTH-IN-LENDING DISCLOSURES box before the actual contract name.
+
+    **Pass 2 — Title Case fallback** (searches only the first 6 meaningful lines):
+    Catches forms whose title is mixed-case (e.g. "Credit Application").  Restricted
+    to the opening lines because real titles appear near the top of the page;
+    field labels and body text that happen to be Title Case appear much later.
+    Word count is capped at 4 (tighter than ALL-CAPS) to exclude long field-header
+    strings like "Title Last Name First Middle Suffix" (6 words).
     """
     half = max(len(lines) // 2, 10)
     result: str | None = None
+
     for line in lines[:half]:
         stripped = line.rstrip("*").strip()
         if len(stripped) < 4 or len(stripped) > _TITLE_MAX_CHARS:
@@ -276,7 +284,44 @@ def _extract_text_title(lines: list[str], *, prefer_last: bool = False) -> str |
                 result = stripped  # keep scanning — last match wins
             else:
                 return _sanitize_filename(stripped)  # first match wins
-    return _sanitize_filename(result) if result else None
+
+    if result:
+        return _sanitize_filename(result)
+
+    # Pass 2: Title Case fallback — only the first 6 lines, max 4 words.
+    # ALL-CAPS strings are excluded: they already failed Pass 1 for a good reason
+    # (e.g. "APPLICABLE LAW" — a section label, not a document title).
+    for line in lines[:min(half, 6)]:
+        stripped = line.rstrip("*").strip()
+        if len(stripped) < 4 or len(stripped) > _TITLE_MAX_CHARS:
+            continue
+        if stripped.endswith("."):
+            continue
+        if any(ord(c) > 127 for c in stripped):
+            continue
+        if _TEXT_TITLE_SKIP_RE.search(stripped):
+            continue
+        if _TEXT_TITLE_SECTION_RE.match(stripped):
+            continue
+        if _DOC_MARKER_RE.search(stripped):
+            continue
+        words = stripped.split()
+        if not (2 <= len(words) <= 4):
+            continue
+        if words[0].isdigit():
+            continue
+        if not any(sum(c.isalpha() for c in w) >= 3 for w in words):
+            continue
+        if sum(c.isdigit() for c in stripped) >= 7:
+            continue
+        # Skip ALL-CAPS — those already had their chance in Pass 1.
+        if stripped.upper() == stripped:
+            continue
+        # Every alphabetic-starting word must begin with an uppercase letter.
+        if all(w[0].isupper() for w in words if w and w[0].isalpha()):
+            return _sanitize_filename(stripped)
+
+    return None
 
 
 def _analyze_text_page(text: str) -> PageSignal:
