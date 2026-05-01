@@ -203,13 +203,13 @@ def test_group_ambiguous_extends_current():
     assert _group_image_pages(signals) == [[0, 1, 2]]
 
 
-def test_group_leading_ambiguous_forms_own_group():
-    """AMBIGUOUS pages before any NEW_DOC form their own group."""
+def test_group_leading_ambiguous_merges_with_next_new_doc():
+    """AMBIGUOUS pages before the first NEW_DOC are prepended to that document."""
     signals = [
         (0, _sig("AMBIGUOUS")),
         (1, _sig("NEW_DOC", "Title")),
     ]
-    assert _group_image_pages(signals) == [[0], [1]]
+    assert _group_image_pages(signals) == [[0, 1]]
 
 
 def test_group_orphan_continuation_forms_own_group():
@@ -520,6 +520,48 @@ def test_analyze_text_page_doc_marker_continuation_stays_together(tmp_path):
     from pdf_extractor.image_splitter import _group_image_pages
     groups = _group_image_pages([(0, sig1), (1, sig2), (2, sig3)])
     assert len(groups) == 3  # each DOCUMENT N OF N starts a new group
+
+
+from pdf_extractor.image_splitter import _group_image_pages
+
+
+def test_group_image_pages_leading_ambiguous_prepended_to_next_new_doc():
+    """Untitled pages before the first titled page are merged into that document."""
+    ambig = PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
+    new_doc = PageSignal(classification="NEW_DOC", title_text="Credit Application", page_num_in_doc=None)
+    groups = _group_image_pages([(0, ambig), (1, new_doc)])
+    assert len(groups) == 1
+    assert groups[0] == [0, 1]
+
+
+def test_group_image_pages_leading_ambiguous_multiple_pages():
+    """Multiple leading untitled pages are all merged into the first titled group."""
+    ambig = PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
+    new_doc = PageSignal(classification="NEW_DOC", title_text="Some Title", page_num_in_doc=None)
+    groups = _group_image_pages([(0, ambig), (1, ambig), (2, new_doc)])
+    assert len(groups) == 1
+    assert groups[0] == [0, 1, 2]
+
+
+def test_group_image_pages_trailing_ambiguous_not_merged_forward():
+    """Untitled pages after a titled group stay in that group, not the next one."""
+    new_a = PageSignal(classification="NEW_DOC", title_text="Doc A", page_num_in_doc=None)
+    ambig = PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
+    new_b = PageSignal(classification="NEW_DOC", title_text="Doc B", page_num_in_doc=None)
+    groups = _group_image_pages([(0, new_a), (1, ambig), (2, new_b)])
+    assert len(groups) == 2
+    assert groups[0] == [0, 1]   # ambiguous page stays with Doc A
+    assert groups[1] == [2]
+
+
+def test_group_image_pages_anchored_group_not_merged_forward():
+    """A group with a real anchor (NEW_DOC) is saved before the next NEW_DOC."""
+    new_a = PageSignal(classification="NEW_DOC", title_text="Doc A", page_num_in_doc=None)
+    new_b = PageSignal(classification="NEW_DOC", title_text="Doc B", page_num_in_doc=None)
+    groups = _group_image_pages([(0, new_a), (1, new_b)])
+    assert len(groups) == 2
+    assert groups[0] == [0]
+    assert groups[1] == [1]
 
 
 from pdf_extractor.image_splitter import split_pdf

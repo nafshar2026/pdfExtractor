@@ -446,6 +446,11 @@ def _group_image_pages(
     Grouping rules (applied in order):
 
     - **NEW_DOC**: Close the current group (if any) and start a fresh one.
+      Exception: if the current group consists entirely of AMBIGUOUS pages (no
+      anchor signal has been seen yet), those pages are prepended to the new
+      NEW_DOC group rather than saved as a separate file.  This handles forms
+      where the title page comes second and the first page is a cover/back side
+      with no detectable title.
     - **CONTINUATION**: Append to the current group.  If ``total_pages_in_doc``
       changes between consecutive CONTINUATION pages (i.e. the declared total
       shifts from, say, 4 to 6) a new group is started — this handles back-to-back
@@ -470,30 +475,42 @@ def _group_image_pages(
     groups: list[list[int]] = []
     current: list[int] = []
     current_total: int | None = None
+    current_has_anchor: bool = False  # True once group contains a NEW_DOC or CONTINUATION page
 
     for abs_idx, signal in signals:
         if signal.classification == "CONTINUATION":
+            current_has_anchor = True
             if (current and
                     current_total is not None and
                     signal.total_pages_in_doc is not None and
                     signal.total_pages_in_doc != current_total):
                 groups.append(current)
                 current = [abs_idx]
+                current_has_anchor = True
             elif current:
                 current.append(abs_idx)
             else:
                 current = [abs_idx]
             current_total = signal.total_pages_in_doc
         elif signal.classification == "NEW_DOC":
-            if current:
+            if current and current_has_anchor:
+                # Current group has real content — save it and start fresh.
                 groups.append(current)
-            current = [abs_idx]
+                current = [abs_idx]
+            elif current and not current_has_anchor:
+                # Current group is all-AMBIGUOUS — prepend it to this NEW_DOC group
+                # rather than saving a separate untitled file.
+                current.append(abs_idx)
+            else:
+                current = [abs_idx]
             current_total = signal.total_pages_in_doc
+            current_has_anchor = True
         else:  # AMBIGUOUS
             if current:
                 current.append(abs_idx)
             else:
                 current = [abs_idx]
+                current_has_anchor = False
             current_total = None
 
     if current:
@@ -549,14 +566,20 @@ def _write_image_group(
     Returns:
         Path to the written PDF file.
     """
-    first_idx = group[0]
-    signal = signals.get(first_idx)
-    raw_title = signal.title_text if signal and signal.title_text else None
+    # Scan all pages in the group for the first non-None title.  The titled page
+    # is usually first, but leading AMBIGUOUS pages (prepended by _group_image_pages)
+    # have no title, so the anchor title may be on a later page.
+    raw_title = None
+    for idx in group:
+        sig = signals.get(idx)
+        if sig and sig.title_text:
+            raw_title = sig.title_text
+            break
 
     if raw_title:
         base_name = _sanitize_image_title(raw_title)
     else:
-        start_page = first_idx + 1
+        start_page = group[0] + 1
         end_page = group[-1] + 1
         base_name = f"pages_{start_page}-{end_page}" if len(group) > 1 else f"page_{start_page}"
 
