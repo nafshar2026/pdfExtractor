@@ -317,6 +317,13 @@ def _extract_text_title(lines: list[str], *, prefer_last: bool = False) -> str |
         # Skip ALL-CAPS — those already had their chance in Pass 1.
         if stripped.upper() == stripped:
             continue
+        # Lines containing an ALL-CAPS word with ≥3 alpha chars are column headers or
+        # field-label rows (e.g. "Make Trim VIN"), not document titles.
+        if any(
+            all(c.isupper() for c in w if c.isalpha()) and sum(c.isalpha() for c in w) >= 3
+            for w in words
+        ):
+            continue
         # Every alphabetic-starting word must begin with an uppercase letter.
         if all(w[0].isupper() for w in words if w and w[0].isalpha()):
             return _sanitize_filename(stripped)

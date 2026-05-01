@@ -507,6 +507,13 @@ def test_extract_text_title_title_case_long_line_excluded():
     assert _extract_text_title(lines) is None
 
 
+def test_extract_text_title_title_case_rejects_allcaps_word():
+    """Title Case fallback rejects lines containing an ALL-CAPS word (≥3 alpha chars)."""
+    # "VIN" is a 3-letter ALL-CAPS code — marks a column header, not a document title.
+    lines = ["Make Trim VIN"]
+    assert _extract_text_title(lines) is None
+
+
 def test_analyze_text_page_doc_marker_continuation_stays_together(tmp_path):
     """Multiple pages sharing 'DOCUMENT 1 OF 2' header stay in one group."""
     page1 = "DOCUMENT 1 OF 2\nDT 5/23\nfirst page content here with enough chars to count"
