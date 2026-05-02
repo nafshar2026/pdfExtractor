@@ -20,9 +20,4 @@ jobs:
           ADO_PAT: ${{ secrets.ADO_PAT }}
           ADO_REPO_URL: ${{ secrets.ADO_REPO_URL }}
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-
-          git remote add azure https://:${ADO_PAT}@${ADO_REPO_URL#https://}
-
-          git push azure --mirror
+          git push https://:$ADO_PAT@${ADO_REPO_URL#https://} --mirror
