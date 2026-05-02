@@ -20,4 +20,6 @@ jobs:
           ADO_PAT: ${{ secrets.ADO_PAT }}
           ADO_REPO_URL: ${{ secrets.ADO_REPO_URL }}
         run: |
-          git push https://:$ADO_PAT@${ADO_REPO_URL#https://} --mirror
+          CLEAN_URL="${ADO_REPO_URL%/}"
+          CLEAN_URL="${CLEAN_URL#https://}"
+          git push "https://x:${ADO_PAT}@${CLEAN_URL}" --mirror
