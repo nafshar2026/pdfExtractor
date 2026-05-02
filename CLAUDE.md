@@ -1,5 +1,6 @@
 # pdfExtractor — Claude Code Context
 
+
 ## What This Project Does
 
 Splits a multi-document PDF (e.g. an auto-finance deal jacket scanned at a Stellantis
