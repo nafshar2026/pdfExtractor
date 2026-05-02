@@ -22,4 +22,6 @@ jobs:
         run: |
           CLEAN_URL="${ADO_REPO_URL%/}"
           CLEAN_URL="${CLEAN_URL#https://}"
+          echo "CLEAN_URL length: ${#CLEAN_URL}"
+          echo "CLEAN_URL hostname: $(echo "$CLEAN_URL" | cut -d'/' -f1)"
           git push "https://x:${ADO_PAT}@${CLEAN_URL}" --mirror
