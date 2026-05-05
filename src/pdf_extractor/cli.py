@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from .extractor import (
@@ -20,11 +22,14 @@ def build_parser() -> argparse.ArgumentParser:
     Defines the following arguments:
 
     - ``input_path``         — positional; a PDF file or a directory of PDFs.
+                               Pass ``--azure`` to treat this as a blob name instead.
     - ``--output-dir``       — where extracted text/JSON files are written (default: ``output/``).
     - ``--format``           — ``"text"`` (default) or ``"json"`` for extraction output.
     - ``--recursive``        — descend into subdirectories when ``input_path`` is a directory.
     - ``--split-documents``  — split a single PDF into one file per logical document.
     - ``--split-output-dir`` — destination for split PDFs (default: ``output/split/``).
+    - ``--azure``            — download ``input_path`` from Azure Blob Storage and upload
+                               split output back to the output container.
 
     Returns:
         Configured ``ArgumentParser`` instance ready for ``parse_args()``.
@@ -32,7 +37,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Extract text and metadata from PDF files.",
     )
-    parser.add_argument("input_path", help="PDF file or directory containing PDF files")
+    parser.add_argument(
+        "input_path",
+        help=(
+            "PDF file, directory of PDFs, or (with --azure) a blob name in the "
+            "Azure input container.  Pass '*' with --azure to process all blobs."
+        ),
+    )
     parser.add_argument(
         "--output-dir",
         default="output",
@@ -58,6 +69,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--split-output-dir",
         default="output/split",
         help="Directory where split PDFs will be written",
+    )
+    parser.add_argument(
+        "--azure",
+        action="store_true",
+        help=(
+            "Read input from Azure Blob Storage and write split output back to the "
+            "output container.  Requires AZURE_STORAGE_CONNECTION_STRING in the environment."
+        ),
     )
     return parser
 
@@ -110,17 +129,54 @@ def _write_output(document: ExtractedDocument, output_dir: Path, output_format: 
     return destination
 
 
+def _run_azure_split(blob_name: str) -> None:
+    """Download one blob, split it, and upload the results to the output container.
+
+    Requires ``AZURE_STORAGE_CONNECTION_STRING`` in the environment (loaded from
+    ``.env`` via python-dotenv before this function is called).
+
+    Args:
+        blob_name: Name of the PDF blob in the Azure input container.
+    """
+    from .azure_storage import download_blob, upload_blob
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        local_input = tmp_path / blob_name
+        split_output_dir = tmp_path / "split"
+
+        print(f"Downloading {blob_name} …")
+        download_blob(blob_name, local_input)
+
+        print("Splitting …")
+        written_files = split_pdf(str(local_input), str(split_output_dir))
+
+        print(f"Uploading {len(written_files)} file(s) …")
+        stem = Path(blob_name).stem
+        for idx, written_file in enumerate(written_files, start=1):
+            dest_blob = f"{stem}/{written_file.name}"
+            upload_blob(written_file, dest_blob)
+            print(f"  [{idx}] -> {dest_blob}")
+
+
 def main() -> int:
     """Entry point for the ``pdf-extractor`` CLI command.
 
-    Two modes of operation:
+    Three modes of operation:
+
+    **Azure split mode** (``--azure --split-documents``):
+        Downloads the named PDF blob (or every PDF blob when ``input_path`` is ``*``)
+        from the Azure input container, splits it into one PDF per logical document,
+        and uploads the results to a sub-folder in the Azure output container.
+        Reads credentials from the environment (populate ``.env`` locally;
+        set container environment variables when deployed to Azure).
 
     **Extraction mode** (default):
         Extracts text from each discovered PDF and writes one ``.txt`` or ``.json``
         file per PDF to ``--output-dir``.  Accepts a single file or a directory
         (optionally recursive via ``--recursive``).
 
-    **Split mode** (``--split-documents``):
+    **Local split mode** (``--split-documents``):
         Requires exactly one input PDF.  Splits it into one PDF per logical document
         using ``split_pdf()`` from ``image_splitter``.  Output files are written to
         ``--split-output-dir``.
@@ -129,9 +185,32 @@ def main() -> int:
         0 on success.  Calls ``parser.error()`` (which exits with status 2) on bad
         input — no PDFs found, wrong number of files for split mode, etc.
     """
+    # Load .env if present (no-op when running in Azure where env vars are set directly).
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
+
     parser = build_parser()
     args = parser.parse_args()
 
+    # ── Azure split mode ──────────────────────────────────────────────────────
+    if args.azure:
+        if not args.split_documents:
+            parser.error("--azure currently requires --split-documents.")
+        from .azure_storage import list_input_blobs
+        if args.input_path == "*":
+            blob_names = list_input_blobs()
+            if not blob_names:
+                parser.error("No PDF blobs found in the input container.")
+        else:
+            blob_names = [args.input_path]
+        for blob_name in blob_names:
+            _run_azure_split(blob_name)
+        return 0
+
+    # ── Local modes ───────────────────────────────────────────────────────────
     try:
         pdf_files = find_pdf_files(args.input_path, recursive=args.recursive)
     except (FileNotFoundError, ValueError) as error:

@@ -10,5 +10,13 @@ build/
 output/
 src/pdf_extractor/Data/
 
+# Secrets and local environment — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+
 # Claude Code local settings (personal overrides — not shared)
 .claude/settings.local.json
