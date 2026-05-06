@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # Azure setup for pdf-extractor — run steps manually one at a time.
-# Prerequisites: az CLI logged in, Docker Desktop running.
-#
-# Fill in the four variables below before running anything.
+# Prerequisites: az CLI logged in.
 
-RESOURCE_GROUP="sfs-pdf-extractor-rg"
-LOCATION="eastus"
-ACR_NAME="sfspdfext"                    # must be globally unique, lowercase, no hyphens
-STORAGE_ACCOUNT="<your-storage-account-name>"   # the account you created earlier
+RESOURCE_GROUP="nader-test-rag"
+LOCATION="centralus"
+ACR_NAME="NaderContainerRegistry"
+STORAGE_ACCOUNT="naderblob02"
 
 # ── Step 1: Create resource group (skip if it already exists) ────────────────
 az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
@@ -50,6 +48,9 @@ az containerapp job create \
     --environment "pdf-extractor-env" \
     --trigger-type Manual \
     --replica-timeout 3600 \
+    --replica-retry-limit 0 \
+    --parallelism 1 \
+    --replica-completion-count 1 \
     --image "$ACR_SERVER/pdf-extractor:latest" \
     --registry-server "$ACR_SERVER" \
     --registry-username "$ACR_NAME" \
@@ -58,8 +59,8 @@ az containerapp job create \
     --args "RO-1.pdf" \
     --env-vars \
         "AZURE_STORAGE_CONNECTION_STRING=secretref:conn-str" \
-        "AZURE_INPUT_CONTAINER=pdf-input" \
-        "AZURE_OUTPUT_CONTAINER=pdf-output" \
+        "AZURE_INPUT_CONTAINER=pdfinput" \
+        "AZURE_OUTPUT_CONTAINER=pdfoutput" \
     --secrets "conn-str=$CONN_STR"
 
 # ── Step 8: Start a job execution ────────────────────────────────────────────
