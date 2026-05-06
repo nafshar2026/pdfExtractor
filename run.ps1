@@ -116,6 +116,40 @@ function Wait-ForJob {
     }
 }
 
+# ── Welcome screen ───────────────────────────────────────────────────────────
+Clear-Host
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host "  pdf-extractor — Azure PDF Splitting Tool" -ForegroundColor Cyan
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  WHAT THIS DOES:" -ForegroundColor White
+Write-Host "  Splits multi-document PDFs (e.g. deal jackets) into one"
+Write-Host "  PDF per logical document using AI-based page detection."
+Write-Host "  Input files are read from Azure Blob Storage and split"
+Write-Host "  output files are written back to Azure Blob Storage."
+Write-Host ""
+Write-Host "  MENU OPTIONS:" -ForegroundColor White
+Write-Host "  1. Run job         — process the current input file"
+Write-Host "  2. Change & run    — pick a different PDF and process it"
+Write-Host "  3. Check status    — see if the last job succeeded or failed"
+Write-Host "  4. List outputs    — browse split PDFs in blob storage"
+Write-Host "  5. Rebuild image   — use after code changes (admin only)"
+Write-Host "  6. Show logs       — diagnose a failed run"
+Write-Host "  0. Exit"
+Write-Host ""
+Write-Host "  WHERE FILES LIVE:" -ForegroundColor White
+Write-Host "  Input PDFs  → Azure Portal → naderblob02 → pdfinput"
+Write-Host "  Output PDFs → Azure Portal → naderblob02 → pdfoutput"
+Write-Host "  Upload new input PDFs via Portal: naderblob02 → pdfinput → Upload"
+Write-Host ""
+Write-Host "  NOTE: Azure access expires every 8 hours (PIM). If you get" -ForegroundColor Yellow
+Write-Host "  permission errors, go to Azure Portal → Privileged Identity" -ForegroundColor Yellow
+Write-Host "  Management → My Roles → Activate your role, then re-run." -ForegroundColor Yellow
+Write-Host ""
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host ""
+Read-Host "Press Enter to continue"
+
 # ── Menu ─────────────────────────────────────────────────────────────────────
 Assert-AzCli
 Assert-LoggedIn
