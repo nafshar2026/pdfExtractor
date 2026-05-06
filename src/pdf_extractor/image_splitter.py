@@ -48,6 +48,28 @@ _TEXT_TITLE_SKIP_RE = re.compile(
 # "A. " or "1. " style section headers within a document body.
 _TEXT_TITLE_SECTION_RE = re.compile(r"^([A-Za-z]|\d+)\.\s")
 
+# DealerTrack credit application detection.
+# DT prints a version footer ("DT 6/17", "DT 5/23") on every page of their forms;
+# the credit app is the only one that also carries the incomplete-applications notice.
+# The DT pattern is intentionally loose ("DT" + any digit) to survive OCR misreads.
+_DT_FOOTER_RE = re.compile(r"\bDT\s*\d", re.IGNORECASE)
+_DT_CREDIT_APP_RE = re.compile(r"INCOMPLETE\s+APPLICATIONS\s+WILL\s+NOT\s+BE\s+PROCESSED", re.IGNORECASE)
+
+
+def _infer_content_title(text: str) -> str | None:
+    """Return a canonical title when structural heuristics cannot detect one.
+
+    Currently handles one known case: DealerTrack credit application forms,
+    which carry no ALL-CAPS title but do carry a unique DT version footer and
+    an 'INCOMPLETE APPLICATIONS WILL NOT BE PROCESSED' instruction line.
+    Both signals must be present to avoid false positives on other DT forms.
+
+    Works on both digitally-extracted text and OCR-joined text from image pages.
+    """
+    if _DT_FOOTER_RE.search(text) and _DT_CREDIT_APP_RE.search(text):
+        return "Credit Application"
+    return None
+
 # Module-level singleton; avoids reloading the ~200 MB PaddleOCR model on every page.
 _ocr_instance: PaddleOCR | None = None
 
@@ -373,6 +395,9 @@ def _analyze_text_page(text: str) -> PageSignal:
 
     # No explicit page markers — a detectable title signals a new document;
     # no title means this page belongs to whatever came before.
+    inferred = _infer_content_title(text)
+    if inferred:
+        return PageSignal(classification="NEW_DOC", title_text=inferred, page_num_in_doc=None)
     title = _extract_text_title(lines)
     if title:
         return PageSignal(classification="NEW_DOC", title_text=title, page_num_in_doc=None)
@@ -412,6 +437,20 @@ def _analyze_image_page(pdf_page) -> PageSignal:
 
     top_strip = pil_image.crop((0, 0, width, int(height * _TOP_STRIP_FRACTION)))
     top_result = ocr.ocr(np.array(top_strip))
+    top_texts = _extract_ocr_texts(top_result)
+
+    # Content-based inference: join bottom + top OCR texts and check for known form
+    # fingerprints before falling through to the layout-based title scorer.
+    ocr_combined = " ".join(bottom_texts + top_texts)
+    inferred = _infer_content_title(ocr_combined)
+    if inferred:
+        return PageSignal(
+            classification="NEW_DOC",
+            title_text=inferred,
+            page_num_in_doc=1 if page_one_total else None,
+            total_pages_in_doc=page_one_total,
+        )
+
     best_title = _select_best_title(top_result)
 
     if best_title:
