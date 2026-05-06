@@ -27,20 +27,20 @@
 #
 #   2. Contributor access to the nader-test-rag resource group
 #      Ask the project owner to add you:
-#      Azure Portal → nader-test-rag → Access Control (IAM) → Add role assignment
-#      → Role: Contributor → assign to your email address
+#      Azure Portal -> nader-test-rag -> Access Control (IAM) -> Add role assignment
+#      -> Role: Contributor -> assign to your email address
 #
 # BEFORE EACH SESSION (every 8 hours):
 #   Your Azure access expires every 8 hours due to PIM (Privileged Identity
 #   Management). Before running this script each day, activate your role:
-#     Azure Portal → search "Privileged Identity Management"
-#     → My Roles → Eligible assignments → Activate next to your role
+#     Azure Portal -> search "Privileged Identity Management"
+#     -> My Roles -> Eligible assignments -> Activate next to your role
 #   Then run this script — it will prompt you to log in automatically.
 #
 # WHERE FILES LIVE:
-#   Input PDFs  → Azure Portal → naderblob02 → pdfinput container
-#   Output PDFs → Azure Portal → naderblob02 → pdfoutput container
-#   Upload new input PDFs via the Portal: naderblob02 → pdfinput → Upload
+#   Input PDFs  -> Azure Portal -> naderblob02 -> pdfinput container
+#   Output PDFs -> Azure Portal -> naderblob02 -> pdfoutput container
+#   Upload new input PDFs via the Portal: naderblob02 -> pdfinput -> Upload
 #
 # FULL DOCUMENTATION:
 #   https://github.com/nafshar2026/pdfExtractor (README.md)
@@ -138,13 +138,13 @@ Write-Host "  6. Show logs       — diagnose a failed run"
 Write-Host "  0. Exit"
 Write-Host ""
 Write-Host "  WHERE FILES LIVE:" -ForegroundColor White
-Write-Host "  Input PDFs  → Azure Portal → naderblob02 → pdfinput"
-Write-Host "  Output PDFs → Azure Portal → naderblob02 → pdfoutput"
-Write-Host "  Upload new input PDFs via Portal: naderblob02 → pdfinput → Upload"
+Write-Host "  Input PDFs  -> Azure Portal -> naderblob02 -> pdfinput"
+Write-Host "  Output PDFs -> Azure Portal -> naderblob02 -> pdfoutput"
+Write-Host "  Upload new input PDFs via Portal: naderblob02 -> pdfinput -> Upload"
 Write-Host ""
 Write-Host "  NOTE: Azure access expires every 8 hours (PIM). If you get" -ForegroundColor Yellow
-Write-Host "  permission errors, go to Azure Portal → Privileged Identity" -ForegroundColor Yellow
-Write-Host "  Management → My Roles → Activate your role, then re-run." -ForegroundColor Yellow
+Write-Host "  permission errors, go to Azure Portal -> Privileged Identity" -ForegroundColor Yellow
+Write-Host "  Management -> My Roles -> Activate your role, then re-run." -ForegroundColor Yellow
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
