@@ -178,7 +178,7 @@ while ($true) {
         "1" {
             # Start the job on the current target file
             Write-Host ""
-            Write-Host "Starting job for '$current'..." -ForegroundColor Cyan
+            Write-Host "Starting job for $current ..." -ForegroundColor Cyan
             az containerapp job start --name $JOB_NAME --resource-group $RESOURCE_GROUP | Out-Null
             Write-Host "Job started. First run takes 3-5 min (model download). Subsequent runs ~1-2 min."
             Wait-ForJob
@@ -187,7 +187,7 @@ while ($true) {
         "2" {
             # Change the target file and run
             Write-Host ""
-            Write-Host "Files available in '$INPUT_CONTAINER':" -ForegroundColor Cyan
+            Write-Host "Files available in $INPUT_CONTAINER :" -ForegroundColor Cyan
             az storage blob list --account-name $STORAGE_ACCOUNT --container-name $INPUT_CONTAINER `
                 --query "[].name" -o tsv --auth-mode key
             Write-Host ""
@@ -195,7 +195,7 @@ while ($true) {
             if ($newFile) {
                 az containerapp job update --name $JOB_NAME --resource-group $RESOURCE_GROUP `
                     --args $newFile | Out-Null
-                Write-Host "Target updated to '$newFile'. Starting job..." -ForegroundColor Cyan
+                Write-Host "Target updated to $newFile. Starting job..." -ForegroundColor Cyan
                 az containerapp job start --name $JOB_NAME --resource-group $RESOURCE_GROUP | Out-Null
                 Wait-ForJob
             }
@@ -212,7 +212,7 @@ while ($true) {
         "4" {
             # List all output files in the output blob container
             Write-Host ""
-            Write-Host "Output files in '$OUTPUT_CONTAINER':" -ForegroundColor Cyan
+            Write-Host "Output files in $OUTPUT_CONTAINER :" -ForegroundColor Cyan
             az storage blob list --account-name $STORAGE_ACCOUNT --container-name $OUTPUT_CONTAINER `
                 --query "[].name" -o tsv --auth-mode key
         }
