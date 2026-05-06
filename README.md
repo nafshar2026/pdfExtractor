@@ -1,50 +1,132 @@
-# PDF Extractor
+# pdf-extractor
 
-This file documents what the project does, how to install it, and how to run the CLI.
+Splits a multi-document PDF (e.g. a scanned auto-finance deal jacket) into one PDF
+per logical document. Supports both digital text PDFs and scanned image PDFs via
+PaddleOCR. Input and output files are stored in Azure Blob Storage.
 
-Small Python CLI for extracting text and metadata from PDF files.
+---
 
-## Features
+## How it works
 
-- Extract text from a single PDF or a full directory.
-- Export each PDF as plain text or JSON.
-- Include document metadata and page-level content in JSON output.
-- Skip image-only pages gracefully when no embedded text is present.
+Each page is analysed for structural signals — page-numbering footers, embedded
+document markers, or a prominent title — and the results are grouped into document
+runs before writing output files. The same logic handles both digital text pages
+and scanned image pages; only the extraction method differs.
 
-## Setup
+---
+
+## Running on Azure (recommended)
+
+The application runs as an **Azure Container Apps Job**. All infrastructure is
+already deployed. You only need:
+
+1. **Contributor access** to the `nader-test-rag` resource group — ask the project
+   owner to add you via Azure Portal → nader-test-rag → Access Control (IAM).
+
+2. **Azure CLI** installed — ask your admin to install it from
+   `https://aka.ms/installazurecliwindows` if it is not already available.
+
+3. **PIM role activated** — your access expires every 8 hours. Before each session:
+   Azure Portal → Privileged Identity Management → My Roles → Activate.
+
+4. **`run.ps1`** — download this single file from the repo. No cloning required.
+   Run it with:
+   ```powershell
+   .\run.ps1
+   ```
+   An interactive menu guides you through all operations.
+
+### Menu options
+
+| Option | What it does |
+|--------|-------------|
+| 1 | Run the job on the current target file |
+| 2 | Pick a different input file and run |
+| 3 | Check the status of the last run |
+| 4 | List output files in blob storage |
+| 5 | Rebuild the Docker image after a code change |
+| 6 | Show logs from the last run (use when a run fails) |
+
+### Azure resources
+
+| Resource | Name |
+|----------|------|
+| Resource group | `nader-test-rag` |
+| Container App Job | `pdf-extractor-job` |
+| Container Registry | `NaderContainerRegistry` |
+| Storage account | `naderblob02` |
+| Input container | `pdfinput` |
+| Output container | `pdfoutput` |
+
+Input PDFs are uploaded to the `pdfinput` blob container via the Azure Portal.
+Split output PDFs appear under `pdfoutput/<filename>/` after a successful run.
+
+---
+
+## Running locally
+
+### One-time setup
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e .[dev]
+py -3.11 -m venv .venv
+.venv\Scripts\pip install -e ".[dev]"
 ```
 
-## Usage
+Copy `.env.example` to `.env` and fill in your Azure Storage connection string
+(Azure Portal → naderblob02 → Security + networking → Access keys → key1 →
+Connection string).
 
-Extract a single PDF into a text file:
+### Split a PDF from Azure Blob Storage
 
 ```powershell
-pdf-extractor input.pdf --output-dir output
+.venv\Scripts\python -m pdf_extractor.cli "RO-1.pdf" --azure --split-documents
 ```
 
-Extract all PDFs in a folder recursively as JSON:
+### Split a local PDF file
 
 ```powershell
-pdf-extractor .\pdfs --output-dir output --format json --recursive
+.venv\Scripts\python -m pdf_extractor.cli src/pdf_extractor/Data/Sample-1.pdf --split-documents --split-output-dir output/split-1
 ```
 
-Run tests:
+### Run tests
 
 ```powershell
-pytest
+.venv\Scripts\python -m pytest tests/ -v
 ```
 
-## Output formats
+---
 
-- `text`: Writes one `.txt` file per input PDF.
-- `json`: Writes one `.json` file per input PDF containing metadata, page count, and page text.
+## Repository layout
 
-## Notes
+```
+src/pdf_extractor/
+    extractor.py        # Core pypdf utilities and data models
+    image_splitter.py   # split_pdf() entry point and all boundary-detection logic
+    cli.py              # argparse CLI — local and Azure modes
+    azure_storage.py    # Azure Blob Storage download/upload helpers
+    genpdf.py           # Utility: generates text-based test PDFs
 
-- This project extracts embedded text. It does not perform OCR on scanned PDFs.
-- For scanned documents, the next step would be integrating OCR with a tool like Tesseract.
+tests/
+    test_extractor.py
+    test_image_splitter.py
+
+Dockerfile              # Container image definition
+run.ps1                 # Interactive Azure operations menu (share this with users)
+azure-deploy.sh         # One-time infrastructure setup commands (admin use only)
+.env.example            # Template for local environment variables
+```
+
+---
+
+## Deploying from scratch (admin only)
+
+If the Azure infrastructure needs to be rebuilt from scratch, follow the numbered
+steps in `azure-deploy.sh`. Steps 1–2 (resource group and registry) are one-time.
+Step 3 (image build) is repeated whenever code changes. Steps 6–7 (environment
+and job) are one-time.
+
+After any code change, rebuild the image and the job picks it up on the next run:
+
+```powershell
+az acr build --registry NaderContainerRegistry --resource-group nader-test-rag --image pdf-extractor:latest .
+```

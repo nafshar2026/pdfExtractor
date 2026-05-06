@@ -3,8 +3,12 @@
 # Save this file anywhere on your machine and run it with:
 #   .\run.ps1
 #
+# Full documentation: README.md in the GitHub repo
+#   https://github.com/nafshar2026/pdfExtractor
+#
 # Prerequisites:
 #   - Azure CLI installed (ask admin if not available)
+#   - Contributor access to the nader-test-rag resource group
 #   - PIM role activated in the Azure Portal (expires every 8 hours)
 #     Portal → Privileged Identity Management → My Roles → Activate
 # ============================================================
