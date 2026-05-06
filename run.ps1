@@ -232,7 +232,7 @@ while ($true) {
             Write-Host ""
             $execName = az containerapp job execution list --name $JOB_NAME `
                 --resource-group $RESOURCE_GROUP --query "[0].name" -o tsv
-            Write-Host "Fetching logs for '$execName'..." -ForegroundColor Cyan
+            Write-Host "Fetching logs for $execName ..." -ForegroundColor Cyan
             az containerapp job logs show --name $JOB_NAME --resource-group $RESOURCE_GROUP `
                 --execution $execName --container $JOB_NAME --tail 100
         }
