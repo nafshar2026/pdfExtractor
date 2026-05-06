@@ -26,7 +26,7 @@ def download_blob(blob_name: str, destination: Path) -> None:
         blob_name:   Name of the blob in the input container (e.g. "Sample-1.pdf").
         destination: Local file path where the blob will be written.
     """
-    container = os.environ.get("AZURE_INPUT_CONTAINER", "pdf-input")
+    container = os.environ.get("AZURE_INPUT_CONTAINER", "pdfinput")
     client = _get_client()
     blob_client = client.get_blob_client(container=container, blob=blob_name)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -41,7 +41,7 @@ def upload_blob(source: Path, blob_name: str) -> None:
         source:    Local file path to upload.
         blob_name: Destination blob name in the output container.
     """
-    container = os.environ.get("AZURE_OUTPUT_CONTAINER", "pdf-output")
+    container = os.environ.get("AZURE_OUTPUT_CONTAINER", "pdfoutput")
     client = _get_client()
     blob_client = client.get_blob_client(container=container, blob=blob_name)
     with source.open("rb") as fh:
@@ -54,7 +54,7 @@ def list_input_blobs() -> list[str]:
     Returns:
         Sorted list of PDF blob names.
     """
-    container = os.environ.get("AZURE_INPUT_CONTAINER", "pdf-input")
+    container = os.environ.get("AZURE_INPUT_CONTAINER", "pdfinput")
     client = _get_client()
     container_client = client.get_container_client(container)
     return sorted(
