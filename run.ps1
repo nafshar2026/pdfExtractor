@@ -1,16 +1,52 @@
 # ============================================================
 # pdf-extractor — Azure operations menu
-# Save this file anywhere on your machine and run it with:
-#   .\run.ps1
+# ============================================================
 #
-# Full documentation: README.md in the GitHub repo
-#   https://github.com/nafshar2026/pdfExtractor
+# WHAT THIS DOES:
+#   Splits multi-document PDFs (e.g. auto-finance deal jackets) into one PDF
+#   per logical document. Input files are read from Azure Blob Storage and
+#   split output files are written back to Azure Blob Storage.
 #
-# Prerequisites:
-#   - Azure CLI installed (ask admin if not available)
-#   - Contributor access to the nader-test-rag resource group
-#   - PIM role activated in the Azure Portal (expires every 8 hours)
-#     Portal → Privileged Identity Management → My Roles → Activate
+# HOW TO RUN:
+#   Save this file anywhere on your machine, open PowerShell, and run:
+#     .\run.ps1
+#   An interactive menu will guide you through all operations.
+#
+# MENU OPTIONS:
+#   1. Run job on current file     — process the currently configured input file
+#   2. Change target file and run  — pick a different PDF from blob storage and run
+#   3. Check status of last run    — see if the last job succeeded or failed
+#   4. List output files           — browse split PDFs written to blob storage
+#   5. Rebuild Docker image        — use after code changes (admin only)
+#   6. Show logs from last run     — diagnose failures
+#
+# PREREQUISITES (one-time setup):
+#   1. Azure CLI installed
+#      Ask your admin to install it. Download from:
+#      https://aka.ms/installazurecliwindows
+#
+#   2. Contributor access to the nader-test-rag resource group
+#      Ask the project owner to add you:
+#      Azure Portal → nader-test-rag → Access Control (IAM) → Add role assignment
+#      → Role: Contributor → assign to your email address
+#
+# BEFORE EACH SESSION (every 8 hours):
+#   Your Azure access expires every 8 hours due to PIM (Privileged Identity
+#   Management). Before running this script each day, activate your role:
+#     Azure Portal → search "Privileged Identity Management"
+#     → My Roles → Eligible assignments → Activate next to your role
+#   Then run this script — it will prompt you to log in automatically.
+#
+# WHERE FILES LIVE:
+#   Input PDFs  → Azure Portal → naderblob02 → pdfinput container
+#   Output PDFs → Azure Portal → naderblob02 → pdfoutput container
+#   Upload new input PDFs via the Portal: naderblob02 → pdfinput → Upload
+#
+# FULL DOCUMENTATION:
+#   https://github.com/nafshar2026/pdfExtractor (README.md)
+#
+# SUPPORT:
+#   Contact the project owner: nader.afshar@stellantis-fs.com
 # ============================================================
 
 # ── Azure resource names (do not change) ────────────────────────────────────
