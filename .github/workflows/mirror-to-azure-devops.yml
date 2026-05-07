@@ -3,7 +3,7 @@ name: Mirror to Azure DevOps
 on:
   push:
     branches:
-      - main
+      - '**'
 
 jobs:
   mirror:
@@ -13,7 +13,7 @@ jobs:
       - name: Checkout GitHub repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # required for --mirror
+          fetch-depth: 0
 
       - name: Push mirror to Azure DevOps
         env:
@@ -23,4 +23,7 @@ jobs:
           CLEAN_URL="${ADO_REPO_URL%/}"
           CLEAN_URL="${CLEAN_URL#https://}"
           CLEAN_URL="${CLEAN_URL#*@}"
-          git push "https://x:${ADO_PAT}@${CLEAN_URL}" --mirror
+          git remote add ado "https://x:${ADO_PAT}@${CLEAN_URL}"
+          git fetch --prune origin
+          git push --prune ado refs/remotes/origin/*:refs/heads/*
+          git push --tags ado
