@@ -251,9 +251,20 @@ def _page_to_pil(pdf_page) -> Image.Image | None:
         except Exception as exc:
             _logger.debug("_page_to_pil: could not decode image: %s", exc)
             continue
+
+        # Downscale immediately — before keeping in memory — so that a 600 DPI
+        # scan (5100 px wide, ~100 MB) never lives at full size beyond this loop.
         w, h = pil.size
+        if w > _OCR_MAX_WIDTH:
+            new_h = int(h * _OCR_MAX_WIDTH / w)
+            pil = pil.resize((_OCR_MAX_WIDTH, new_h), Image.LANCZOS)
+            w, h = pil.size
+
         if w * h > best_area:
-            best, best_area = pil, w * h
+            best = pil
+            best_area = w * h
+        else:
+            del pil  # discard non-winners immediately
 
     return best
 
@@ -427,14 +438,6 @@ def _analyze_image_page(pdf_page) -> PageSignal:
     if width == 0 or height == 0:
         del pil_image
         return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
-
-    # Downscale high-resolution scans before OCR to cap PaddlePaddle's inference
-    # buffer size.  600 DPI letter pages can be 5100×6600 px (~100 MB); 1500 px
-    # wide is equivalent to ~150 DPI and gives accurate text recognition.
-    if width > _OCR_MAX_WIDTH:
-        new_height = int(height * _OCR_MAX_WIDTH / width)
-        pil_image = pil_image.resize((_OCR_MAX_WIDTH, new_height), Image.LANCZOS)
-        width, height = pil_image.size
 
     # --- Bottom strip: page-number footer detection ---
     bottom_strip = pil_image.crop((0, int(height * (1 - _BOTTOM_STRIP_FRACTION)), width, height))
