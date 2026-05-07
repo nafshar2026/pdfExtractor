@@ -129,14 +129,18 @@ def _write_output(document: ExtractedDocument, output_dir: Path, output_format: 
     return destination
 
 
-def _run_azure_split(blob_name: str) -> None:
-    """Download one blob, split it, and upload the results to the output container.
+def _run_azure_split(blob_name: str) -> list[dict]:
+    """Download one blob, split it, upload the results, and return opt-in data.
 
     Requires ``AZURE_STORAGE_CONNECTION_STRING`` in the environment (loaded from
     ``.env`` via python-dotenv before this function is called).
 
     Args:
         blob_name: Name of the PDF blob in the Azure input container.
+
+    Returns:
+        List of opt-in result dicts (one per Credit_Application.pdf found).
+        Each dict includes a ``source_file`` key with the blob path.
     """
     from .azure_storage import download_blob, upload_blob
 
@@ -158,16 +162,25 @@ def _run_azure_split(blob_name: str) -> None:
             upload_blob(written_file, dest_blob)
             print(f"  [{idx}] -> {dest_blob}")
 
+        opt_in_results = []
         credit_apps = [f for f in written_files if f.name == "Credit_Application.pdf"]
         if credit_apps:
-            print("Running opt-in extraction …")
-            from .opt_in_extractor import process_folder_to_excel
-            excel_path = tmp_path / "opt_in_results.xlsx"
-            n = process_folder_to_excel(split_output_dir, excel_path)
-            if n > 0:
-                dest_blob = f"{stem}/opt_in_results.xlsx"
-                upload_blob(excel_path, dest_blob)
-                print(f"  Opt-in results ({n} record(s)) -> {dest_blob}")
+            from .opt_in_extractor import extract_credit_app_data
+            from pypdf import PdfReader
+            for ca in credit_apps:
+                print(f"Extracting opt-in data from {ca.name} …")
+                try:
+                    data = extract_credit_app_data(PdfReader(str(ca)))
+                except Exception as exc:
+                    print(f"  WARNING: extraction failed: {exc}")
+                    data = {
+                        "last_name": None, "first_name": None,
+                        "opt_in_status": "error", "telemarketing_phones": [],
+                    }
+                data["source_file"] = f"{stem}/{ca.name}"
+                opt_in_results.append(data)
+
+        return opt_in_results
 
 
 def main() -> int:
@@ -217,8 +230,20 @@ def main() -> int:
                 parser.error("No PDF blobs found in the input container.")
         else:
             blob_names = [args.input_path]
+        all_opt_in: list[dict] = []
         for blob_name in blob_names:
-            _run_azure_split(blob_name)
+            all_opt_in.extend(_run_azure_split(blob_name))
+
+        if all_opt_in:
+            from .azure_storage import upload_blob
+            from .opt_in_extractor import write_results_to_excel
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+                excel_path = Path(tmp.name)
+            write_results_to_excel(all_opt_in, excel_path)
+            upload_blob(excel_path, "opt_in_results.xlsx")
+            excel_path.unlink(missing_ok=True)
+            print(f"Opt-in results ({len(all_opt_in)} record(s)) -> opt_in_results.xlsx")
+
         return 0
 
     # ── Local modes ───────────────────────────────────────────────────────────

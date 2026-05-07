@@ -505,6 +505,43 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
 _MAX_PHONES = 3   # Phone 1 / Phone 2 / Phone 3 columns
 
 
+def write_results_to_excel(results: list[dict], output_xlsx: str | Path) -> None:
+    """Write a list of extraction result dicts to an Excel file.
+
+    Each dict must contain the keys returned by extract_credit_app_data plus
+    an optional 'source_file' key used to populate the Source File column.
+    Overwrites the file if it already exists.
+    """
+    try:
+        import openpyxl
+        from openpyxl.styles import Font
+    except ImportError:
+        raise ImportError("openpyxl is required: pip install openpyxl")
+
+    output_xlsx = Path(output_xlsx)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Opt-In Results"
+
+    phone_headers = [f"Phone {i + 1}" for i in range(_MAX_PHONES)]
+    headers = ["Last Name", "First Name"] + phone_headers + ["Consent", "Source File"]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+
+    for data in results:
+        phones = (data.get("telemarketing_phones") or [])[:_MAX_PHONES]
+        phone_cells = phones + [""] * (_MAX_PHONES - len(phones))
+        ws.append(
+            [data.get("last_name") or "", data.get("first_name") or ""]
+            + phone_cells
+            + [data.get("opt_in_status", ""), data.get("source_file", "")]
+        )
+
+    wb.save(output_xlsx)
+    _logger.info("Wrote %d rows to %s", len(results), output_xlsx)
+
+
 def process_folder_to_excel(
     input_folder: str | Path,
     output_xlsx: str | Path,
@@ -519,33 +556,15 @@ def process_folder_to_excel(
     Returns:
         Number of credit applications processed.
     """
-    try:
-        import openpyxl
-        from openpyxl.styles import Font
-    except ImportError:
-        raise ImportError("openpyxl is required: pip install openpyxl")
-
     from pypdf import PdfReader
 
     input_folder = Path(input_folder)
-    output_xlsx = Path(output_xlsx)
-
     credit_apps = sorted(input_folder.rglob(_CREDIT_APP_FILENAME))
     if not credit_apps:
         _logger.warning("No %s files found under %s", _CREDIT_APP_FILENAME, input_folder)
         return 0
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Opt-In Results"
-
-    phone_headers = [f"Phone {i + 1}" for i in range(_MAX_PHONES)]
-    headers = ["Last Name", "First Name"] + phone_headers + ["Consent", "Source File"]
-    ws.append(headers)
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-
-    processed = 0
+    results = []
     for pdf_path in credit_apps:
         _logger.info("Processing %s", pdf_path)
         try:
@@ -557,17 +576,8 @@ def process_folder_to_excel(
                 "last_name": None, "first_name": None,
                 "opt_in_status": "error", "telemarketing_phones": [],
             }
+        data["source_file"] = str(pdf_path)
+        results.append(data)
 
-        phones = (data.get("telemarketing_phones") or [])[:_MAX_PHONES]
-        phone_cells = phones + [""] * (_MAX_PHONES - len(phones))
-
-        ws.append(
-            [data.get("last_name") or "", data.get("first_name") or ""]
-            + phone_cells
-            + [data.get("opt_in_status", ""), str(pdf_path)]
-        )
-        processed += 1
-
-    wb.save(output_xlsx)
-    _logger.info("Wrote %d rows to %s", processed, output_xlsx)
-    return processed
+    write_results_to_excel(results, output_xlsx)
+    return len(results)
