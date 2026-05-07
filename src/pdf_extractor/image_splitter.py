@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import io
 import logging
 import re
@@ -405,7 +406,12 @@ def _analyze_text_page(text: str) -> PageSignal:
 
 
 def _analyze_image_page(pdf_page) -> PageSignal:
-    """Analyze a scanned/image page using PaddleOCR."""
+    """Analyze a scanned/image page using PaddleOCR.
+
+    Large intermediate objects (PIL images, numpy arrays, OCR result lists) are
+    explicitly deleted as soon as they are no longer needed so the caller's
+    gc.collect() can reclaim them before moving to the next page.
+    """
     pil_image = _page_to_pil(pdf_page)
     if pil_image is None:
         return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
@@ -413,10 +419,15 @@ def _analyze_image_page(pdf_page) -> PageSignal:
     ocr = _get_ocr()
     width, height = pil_image.size
     if width == 0 or height == 0:
+        del pil_image
         return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
 
+    # --- Bottom strip: page-number footer detection ---
     bottom_strip = pil_image.crop((0, int(height * (1 - _BOTTOM_STRIP_FRACTION)), width, height))
-    bottom_result = ocr.ocr(np.array(bottom_strip))
+    bottom_arr = np.array(bottom_strip)
+    del bottom_strip
+    bottom_result = ocr.ocr(bottom_arr)
+    del bottom_arr
     bottom_texts = _extract_ocr_texts(bottom_result)
 
     page_one_total: int | None = None
@@ -426,6 +437,7 @@ def _analyze_image_page(pdf_page) -> PageSignal:
             page_num = int(m.group(1))
             total = int(m.group(2))
             if page_num > 1:
+                del pil_image, bottom_result
                 return PageSignal(
                     classification="CONTINUATION",
                     title_text=None,
@@ -435,15 +447,19 @@ def _analyze_image_page(pdf_page) -> PageSignal:
             if page_num == 1 and total > 1:
                 page_one_total = total
 
+    # --- Top strip: title detection ---
     top_strip = pil_image.crop((0, 0, width, int(height * _TOP_STRIP_FRACTION)))
-    top_result = ocr.ocr(np.array(top_strip))
+    top_arr = np.array(top_strip)
+    del top_strip, pil_image  # full image no longer needed
+    top_result = ocr.ocr(top_arr)
+    del top_arr
     top_texts = _extract_ocr_texts(top_result)
 
-    # Content-based inference: join bottom + top OCR texts and check for known form
-    # fingerprints before falling through to the layout-based title scorer.
     ocr_combined = " ".join(bottom_texts + top_texts)
+    del bottom_texts, top_texts
     inferred = _infer_content_title(ocr_combined)
     if inferred:
+        del bottom_result, top_result
         return PageSignal(
             classification="NEW_DOC",
             title_text=inferred,
@@ -452,6 +468,7 @@ def _analyze_image_page(pdf_page) -> PageSignal:
         )
 
     best_title = _select_best_title(top_result)
+    del bottom_result, top_result
 
     if best_title:
         return PageSignal(
@@ -667,6 +684,7 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path) -> list[Path]:
         signal = analyze_page(reader.pages[i])
         signals_list.append((i, signal))
         signals_dict[i] = signal
+        gc.collect()  # release PIL images and OCR buffers from the processed page
 
     groups = _group_image_pages(signals_list)
 
