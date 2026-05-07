@@ -235,14 +235,17 @@ def main() -> int:
             all_opt_in.extend(_run_azure_split(blob_name))
 
         if all_opt_in:
+            import datetime
             from .azure_storage import upload_blob
             from .opt_in_extractor import write_results_to_excel
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            xlsx_name = f"opt_in_results_{timestamp}.xlsx"
             with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
                 excel_path = Path(tmp.name)
             write_results_to_excel(all_opt_in, excel_path)
-            upload_blob(excel_path, "opt_in_results.xlsx")
+            upload_blob(excel_path, xlsx_name)
             excel_path.unlink(missing_ok=True)
-            print(f"Opt-in results ({len(all_opt_in)} record(s)) -> opt_in_results.xlsx")
+            print(f"Opt-in results ({len(all_opt_in)} record(s)) -> {xlsx_name}")
 
         return 0
 
