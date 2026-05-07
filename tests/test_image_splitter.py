@@ -76,8 +76,9 @@ def test_analyze_page_continuation_detected():
         _make_ocr_result(["Page 3 of 6"]),   # bottom strip
         _make_ocr_result(["Some Title"]),     # top strip (not reached, continuation wins)
     ]
-    with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
-        sig = analyze_page(page)
+    with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
+        with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
+            sig = analyze_page(page)
     assert sig.classification == "CONTINUATION"
     assert sig.page_num_in_doc == 3
     assert sig.title_text is None
@@ -90,8 +91,9 @@ def test_analyze_page_title_detected():
         _make_ocr_result([]),                     # bottom strip: no continuation
         _make_ocr_result(["ST-556 State Tax"]),   # top strip: short title
     ]
-    with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
-        sig = analyze_page(page)
+    with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
+        with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
+            sig = analyze_page(page)
     assert sig.classification == "NEW_DOC"
     assert sig.title_text == "ST-556 State Tax"
     assert sig.page_num_in_doc is None
@@ -105,8 +107,9 @@ def test_analyze_page_ambiguous_long_top_text():
         _make_ocr_result([]),           # bottom: no continuation
         _make_ocr_result([long_text]),  # top: too long to be a title
     ]
-    with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
-        sig = analyze_page(page)
+    with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
+        with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
+            sig = analyze_page(page)
     assert sig.classification == "AMBIGUOUS"
 
 
@@ -126,8 +129,9 @@ def test_analyze_page_page_1_of_n_with_title():
         _make_ocr_result(["Page 1 of 6"]),    # bottom: page 1 of 6
         _make_ocr_result(["Title Here"]),      # top: title found
     ]
-    with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
-        sig = analyze_page(page)
+    with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
+        with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
+            sig = analyze_page(page)
     assert sig.classification == "NEW_DOC"
     assert sig.title_text == "Title Here"
     assert sig.page_num_in_doc == 1
@@ -142,8 +146,9 @@ def test_analyze_page_page_1_of_n_no_title_is_new_doc():
         _make_ocr_result(["Page 1 of 4"]),  # bottom: page 1 of 4
         _make_ocr_result([]),               # top: nothing usable
     ]
-    with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
-        sig = analyze_page(page)
+    with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
+        with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
+            sig = analyze_page(page)
     assert sig.classification == "NEW_DOC"
     assert sig.title_text is None
     assert sig.page_num_in_doc == 1
@@ -157,8 +162,9 @@ def test_analyze_page_continuation_carries_total():
     mock_ocr.ocr.side_effect = [
         _make_ocr_result(["Page 3 of 6"]),
     ]
-    with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
-        sig = analyze_page(page)
+    with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
+        with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
+            sig = analyze_page(page)
     assert sig.classification == "CONTINUATION"
     assert sig.page_num_in_doc == 3
     assert sig.total_pages_in_doc == 6
@@ -571,6 +577,53 @@ def test_group_image_pages_anchored_group_not_merged_forward():
     assert groups[1] == [1]
 
 
+def test_group_same_title_no_page_num_merged():
+    """Consecutive NEW_DOC pages with the same title and no page_num are merged.
+
+    This covers multi-page forms that repeat their document name as a page header
+    on every page with no 'Page N of M' footer (e.g. Vehicle Buyer's Order).
+    Without this rule, each page would become a separate 1-page output file.
+    """
+    signals = [
+        (0, _sig("NEW_DOC", "VEHICLE BUYERS ORDER")),
+        (1, _sig("NEW_DOC", "VEHICLE BUYERS ORDER")),
+        (2, _sig("NEW_DOC", "VEHICLE BUYERS ORDER")),
+    ]
+    assert _group_image_pages(signals) == [[0, 1, 2]]
+
+
+def test_group_same_title_different_titles_still_split():
+    """Same-title merging does not suppress splits when titles change."""
+    signals = [
+        (0, _sig("NEW_DOC", "VEHICLE BUYERS ORDER")),
+        (1, _sig("NEW_DOC", "VEHICLE BUYERS ORDER")),
+        (2, _sig("NEW_DOC", "LICENSE REGISTRATION FEES")),
+        (3, _sig("NEW_DOC", "LICENSE REGISTRATION FEES")),
+    ]
+    assert _group_image_pages(signals) == [[0, 1], [2, 3]]
+
+
+def test_group_same_title_page_num_not_merged():
+    """Same title + page_num_in_doc set → NOT merged (DOCUMENT marker or Page 1 of N)."""
+    signals = [
+        (0, _sig("NEW_DOC", "SOME FORM", page_num=1)),
+        (1, _sig("NEW_DOC", "SOME FORM", page_num=1)),
+    ]
+    assert _group_image_pages(signals) == [[0], [1]]
+
+
+def test_group_same_title_after_different_doc_starts_new_group():
+    """Same title appearing after an intervening different document starts a new group."""
+    signals = [
+        (0, _sig("NEW_DOC", "VEHICLE BUYERS ORDER")),
+        (1, _sig("NEW_DOC", "VEHICLE BUYERS ORDER")),
+        (2, _sig("NEW_DOC", "LICENSE REGISTRATION FEES")),  # different doc resets context
+        (3, _sig("NEW_DOC", "VEHICLE BUYERS ORDER")),       # same title as group 0, but new group
+    ]
+    groups = _group_image_pages(signals)
+    assert groups == [[0, 1], [2], [3]]
+
+
 from pdf_extractor.image_splitter import split_pdf
 import pytest
 
@@ -637,5 +690,5 @@ def test_cli_split_documents_calls_split_pdf(tmp_path, monkeypatch):
         mock_split.return_value = [out_dir / "Doc.pdf"]
         exit_code = main()
 
-    mock_split.assert_called_once_with(source, str(out_dir))
+    mock_split.assert_called_once_with(source, str(out_dir), verbose=False)
     assert exit_code == 0

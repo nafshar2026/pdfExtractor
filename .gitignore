@@ -18,5 +18,9 @@ src/pdf_extractor/Data/
 *.key
 *.pfx
 
+# Azure infrastructure config — contains subscription IDs and resource references
+job-config.yaml
+
 # Claude Code local settings (personal overrides — not shared)
 .claude/settings.local.json
+.claude/

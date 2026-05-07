@@ -78,6 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
             "output container.  Requires AZURE_STORAGE_CONNECTION_STRING in the environment."
         ),
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print a per-page signal table after analysis to help diagnose mis-splits.",
+    )
     return parser
 
 
@@ -129,7 +134,7 @@ def _write_output(document: ExtractedDocument, output_dir: Path, output_format: 
     return destination
 
 
-def _run_azure_split(blob_name: str) -> list[dict]:
+def _run_azure_split(blob_name: str, *, verbose: bool = False) -> list[dict]:
     """Download one blob, split it, upload the results, and return opt-in data.
 
     Requires ``AZURE_STORAGE_CONNECTION_STRING`` in the environment (loaded from
@@ -153,7 +158,7 @@ def _run_azure_split(blob_name: str) -> list[dict]:
         download_blob(blob_name, local_input)
 
         print("Splitting …")
-        written_files = split_pdf(str(local_input), str(split_output_dir))
+        written_files = split_pdf(str(local_input), str(split_output_dir), verbose=verbose)
 
         print(f"Uploading {len(written_files)} file(s) …")
         stem = Path(blob_name).stem
@@ -232,7 +237,7 @@ def main() -> int:
             blob_names = [args.input_path]
         all_opt_in: list[dict] = []
         for blob_name in blob_names:
-            all_opt_in.extend(_run_azure_split(blob_name))
+            all_opt_in.extend(_run_azure_split(blob_name, verbose=args.verbose))
 
         if all_opt_in:
             import datetime
@@ -261,7 +266,7 @@ def main() -> int:
     if args.split_documents:
         if len(pdf_files) != 1:
             parser.error("--split-documents requires exactly one input PDF.")
-        written_files = split_pdf(pdf_files[0], args.split_output_dir)
+        written_files = split_pdf(pdf_files[0], args.split_output_dir, verbose=args.verbose)
         for idx, written_file in enumerate(written_files, start=1):
             print(f"[{idx}] -> {written_file.name}")
         return 0

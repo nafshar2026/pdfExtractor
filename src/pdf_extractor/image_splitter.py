@@ -522,11 +522,18 @@ def _group_image_pages(
     Grouping rules (applied in order):
 
     - **NEW_DOC**: Close the current group (if any) and start a fresh one.
-      Exception: if the current group consists entirely of AMBIGUOUS pages (no
+      Exception 1: if the current group consists entirely of AMBIGUOUS pages (no
       anchor signal has been seen yet), those pages are prepended to the new
       NEW_DOC group rather than saved as a separate file.  This handles forms
       where the title page comes second and the first page is a cover/back side
       with no detectable title.
+      Exception 2 (same-title continuation): if the new page's title matches the
+      first titled page of the current group AND the new page has no page-number
+      context (``page_num_in_doc is None`` — meaning title heuristic only, not a
+      DOCUMENT marker or "Page 1 of N"), the page is treated as part of the current
+      document rather than starting a new one.  This handles multi-page forms that
+      repeat their document name as a header on every page with no "Page N of M"
+      footer, which would otherwise produce one output file per page.
     - **CONTINUATION**: Append to the current group.  If ``total_pages_in_doc``
       changes between consecutive CONTINUATION pages (i.e. the declared total
       shifts from, say, 4 to 6) a new group is started — this handles back-to-back
@@ -552,6 +559,7 @@ def _group_image_pages(
     current: list[int] = []
     current_total: int | None = None
     current_has_anchor: bool = False  # True once group contains a NEW_DOC or CONTINUATION page
+    current_first_title: str | None = None  # title of the first titled page in the current group
 
     for abs_idx, signal in signals:
         if signal.classification == "CONTINUATION":
@@ -563,22 +571,38 @@ def _group_image_pages(
                 groups.append(current)
                 current = [abs_idx]
                 current_has_anchor = True
+                current_first_title = None
             elif current:
                 current.append(abs_idx)
             else:
                 current = [abs_idx]
             current_total = signal.total_pages_in_doc
         elif signal.classification == "NEW_DOC":
-            if current and current_has_anchor:
+            # Same-title continuation: a page whose title matches the first title of the
+            # current group, and which carries no page-number context, is treated as a
+            # continuation of that document.  Covers multi-page forms that repeat their
+            # name as a page header on every page without any "Page N of M" footer.
+            # The page_num_in_doc is None guard ensures DOCUMENT N OF N pages and
+            # explicit "Page 1 of N" pages are never silently merged.
+            if (signal.title_text is not None
+                    and current_first_title is not None
+                    and signal.title_text == current_first_title
+                    and signal.page_num_in_doc is None
+                    and current):
+                current.append(abs_idx)
+            elif current and current_has_anchor:
                 # Current group has real content — save it and start fresh.
                 groups.append(current)
                 current = [abs_idx]
+                current_first_title = signal.title_text
             elif current and not current_has_anchor:
                 # Current group is all-AMBIGUOUS — prepend it to this NEW_DOC group
                 # rather than saving a separate untitled file.
                 current.append(abs_idx)
+                current_first_title = signal.title_text
             else:
                 current = [abs_idx]
+                current_first_title = signal.title_text
             current_total = signal.total_pages_in_doc
             current_has_anchor = True
         else:  # AMBIGUOUS
@@ -673,13 +697,19 @@ def _write_image_group(
     return destination
 
 
-def split_pdf(pdf_path: str | Path, output_dir: str | Path) -> list[Path]:
+def split_pdf(pdf_path: str | Path, output_dir: str | Path, *, verbose: bool = False) -> list[Path]:
     """Unified PDF splitter: analyzes every page for document boundary signals,
     groups them, and writes one PDF per logical document.
 
     Text pages (≥50 extracted chars) are analyzed via pattern matching on the
     extracted text.  Image/scanned pages fall back to PaddleOCR.  The grouping
     logic is identical regardless of page type.
+
+    Args:
+        pdf_path:   Path to the source PDF.
+        output_dir: Directory where split output files are written.
+        verbose:    When True, prints a per-page signal table to stdout after
+                    analysis — useful for diagnosing mis-splits on new files.
     """
     path = Path(pdf_path)
     out_dir = Path(output_dir)
@@ -703,6 +733,16 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path) -> list[Path]:
         gc.collect()  # release OCR buffers from the processed page
 
     fitz_doc.close()
+
+    if verbose:
+        print(f"\n{'Page':>5}  {'Classification':<15}  {'PgNum':>5}  {'Total':>5}  Title")
+        print("-" * 80)
+        for i, sig in signals_list:
+            title_str = (sig.title_text or "")[:40]
+            pg = str(sig.page_num_in_doc) if sig.page_num_in_doc is not None else "-"
+            tot = str(sig.total_pages_in_doc) if sig.total_pages_in_doc is not None else "-"
+            print(f"{i + 1:>5}  {sig.classification:<15}  {pg:>5}  {tot:>5}  {title_str}")
+        print()
 
     groups = _group_image_pages(signals_list)
 
