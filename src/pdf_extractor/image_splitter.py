@@ -222,51 +222,37 @@ def _select_best_title(ocr_result: list | None) -> str | None:
 _logger = logging.getLogger(__name__)
 
 
-def _page_to_pil(pdf_page) -> Image.Image | None:
-    """Extract the dominant embedded image from a PDF page as a PIL Image.
+def _render_page_fitz(fitz_doc, page_idx: int) -> Image.Image | None:
+    """Render a PDF page to a PIL Image using PyMuPDF at a controlled width.
 
-    Many scanned deal-jacket pages embed a single high-resolution scan plus small
-    decorative images (logos, stamps, watermarks).  This function picks the image
-    with the largest pixel area so that incidental graphics do not win over the
-    main page scan.
+    Unlike pypdf's image-extraction approach, PyMuPDF renders on demand and
+    does not cache decompressed pixel data in the document object.  This keeps
+    memory bounded regardless of how many pages have been processed.
+
+    The output width is capped at _OCR_MAX_WIDTH so that PaddlePaddle's
+    inference buffers stay within the container memory limit.
 
     Args:
-        pdf_page: A pypdf ``PageObject`` from ``PdfReader.pages``.
+        fitz_doc:  Open ``fitz.Document`` for the source PDF.
+        page_idx:  Zero-based page index.
 
     Returns:
-        The largest embedded image converted to RGB, or None if the page contains
-        no decodable image data.
+        Rendered page as an RGB PIL Image, or None on failure.
     """
-    images = pdf_page.images
-    if not images:
+    try:
+        page = fitz_doc[page_idx]
+        w_pt = page.rect.width
+        if w_pt <= 0:
+            return None
+        scale = _OCR_MAX_WIDTH / w_pt
+        mat = __import__("fitz").Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        del pix
+        return img
+    except Exception as exc:
+        _logger.debug("_render_page_fitz: failed for page %d: %s", page_idx, exc)
         return None
-
-    # Pick the largest image by pixel area — pages may embed small logos or stamps
-    # before the main scan, so images[0] is not necessarily the page scan.
-    best: Image.Image | None = None
-    best_area = 0
-    for img_obj in images:
-        try:
-            pil = img_obj.image.convert("RGB") if img_obj.image is not None else Image.open(io.BytesIO(img_obj.data)).convert("RGB")
-        except Exception as exc:
-            _logger.debug("_page_to_pil: could not decode image: %s", exc)
-            continue
-
-        # Downscale immediately — before keeping in memory — so that a 600 DPI
-        # scan (5100 px wide, ~100 MB) never lives at full size beyond this loop.
-        w, h = pil.size
-        if w > _OCR_MAX_WIDTH:
-            new_h = int(h * _OCR_MAX_WIDTH / w)
-            pil = pil.resize((_OCR_MAX_WIDTH, new_h), Image.LANCZOS)
-            w, h = pil.size
-
-        if w * h > best_area:
-            best = pil
-            best_area = w * h
-        else:
-            del pil  # discard non-winners immediately
-
-    return best
 
 
 def _extract_text_title(lines: list[str], *, prefer_last: bool = False) -> str | None:
@@ -422,14 +408,19 @@ def _analyze_text_page(text: str) -> PageSignal:
     return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
 
 
-def _analyze_image_page(pdf_page) -> PageSignal:
+def _analyze_image_page(fitz_doc, page_idx: int) -> PageSignal:
     """Analyze a scanned/image page using PaddleOCR.
 
-    Large intermediate objects (PIL images, numpy arrays, OCR result lists) are
-    explicitly deleted as soon as they are no longer needed so the caller's
-    gc.collect() can reclaim them before moving to the next page.
+    Uses PyMuPDF to render the page at a controlled resolution so that
+    pypdf's image-cache does not accumulate over hundreds of pages.
+    Large intermediate objects are explicitly deleted as soon as they are
+    no longer needed so gc.collect() can reclaim them immediately.
+
+    Args:
+        fitz_doc:  Open ``fitz.Document`` for the source PDF.
+        page_idx:  Zero-based index of the page to analyze.
     """
-    pil_image = _page_to_pil(pdf_page)
+    pil_image = _render_page_fitz(fitz_doc, page_idx)
     if pil_image is None:
         return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
 
@@ -506,16 +497,21 @@ def _analyze_image_page(pdf_page) -> PageSignal:
     return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
 
 
-def analyze_page(pdf_page) -> PageSignal:
+def analyze_page(pdf_page, fitz_doc=None, page_idx: int = 0) -> PageSignal:
     """Unified page analyzer: text extraction for digital pages, OCR for scanned pages.
 
     The boundary signals (Page N of M, DOCUMENT N OF N) are structural and apply
     regardless of whether the page content is digitally encoded or image-scanned.
+
+    Args:
+        pdf_page:  pypdf PageObject (used for text extraction).
+        fitz_doc:  Open fitz.Document for the same PDF (used for image rendering).
+        page_idx:  Zero-based index of this page (passed to fitz_doc).
     """
     text = (pdf_page.extract_text() or "").strip()
     if len(text) >= _TEXT_PAGE_MIN_CHARS:
         return _analyze_text_page(text)
-    return _analyze_image_page(pdf_page)
+    return _analyze_image_page(fitz_doc, page_idx)
 
 
 def _group_image_pages(
@@ -694,14 +690,19 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     reader = PdfReader(str(path))
 
+    import fitz
+    fitz_doc = fitz.open(str(path))
+
     signals_list: list[tuple[int, PageSignal]] = []
     signals_dict: dict[int, PageSignal] = {}
 
     for i in range(len(reader.pages)):
-        signal = analyze_page(reader.pages[i])
+        signal = analyze_page(reader.pages[i], fitz_doc=fitz_doc, page_idx=i)
         signals_list.append((i, signal))
         signals_dict[i] = signal
-        gc.collect()  # release PIL images and OCR buffers from the processed page
+        gc.collect()  # release OCR buffers from the processed page
+
+    fitz_doc.close()
 
     groups = _group_image_pages(signals_list)
 
