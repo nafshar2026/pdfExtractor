@@ -158,6 +158,17 @@ def _run_azure_split(blob_name: str) -> None:
             upload_blob(written_file, dest_blob)
             print(f"  [{idx}] -> {dest_blob}")
 
+        credit_apps = [f for f in written_files if f.name == "Credit_Application.pdf"]
+        if credit_apps:
+            print("Running opt-in extraction …")
+            from .opt_in_extractor import process_folder_to_excel
+            excel_path = tmp_path / "opt_in_results.xlsx"
+            n = process_folder_to_excel(split_output_dir, excel_path)
+            if n > 0:
+                dest_blob = f"{stem}/opt_in_results.xlsx"
+                upload_blob(excel_path, dest_blob)
+                print(f"  Opt-in results ({n} record(s)) -> {dest_blob}")
+
 
 def main() -> int:
     """Entry point for the ``pdf-extractor`` CLI command.
