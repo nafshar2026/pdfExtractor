@@ -222,6 +222,19 @@ def _select_best_title(ocr_result: list | None) -> str | None:
 _logger = logging.getLogger(__name__)
 
 
+def _title_key(title: str) -> str:
+    """Normalise a title for same-document comparison.
+
+    Strips everything except letters and digits, then uppercases the result so
+    that OCR variations in spacing, punctuation, and capitalisation all hash to
+    the same key.  Examples that must compare equal:
+      "VEHICLE BUYERS ORDER"  →  "VEHICLEBUYERSORDER"
+      "VEHICLEBUYERS ORDER"   →  "VEHICLEBUYERSORDER"  (missing space)
+      "VEhICLE BUYERS ORDER"  →  "VEHICLEBUYERSORDER"  (mixed-case OCR)
+    """
+    return re.sub(r"[^A-Z0-9]", "", title.upper())
+
+
 def _render_page_fitz(fitz_doc, page_idx: int) -> Image.Image | None:
     """Render a PDF page to a PIL Image using PyMuPDF at a controlled width.
 
@@ -586,7 +599,7 @@ def _group_image_pages(
             # explicit "Page 1 of N" pages are never silently merged.
             if (signal.title_text is not None
                     and current_first_title is not None
-                    and signal.title_text == current_first_title
+                    and _title_key(signal.title_text) == _title_key(current_first_title)
                     and signal.page_num_in_doc is None
                     and current):
                 current.append(abs_idx)

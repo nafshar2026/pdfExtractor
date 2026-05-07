@@ -592,6 +592,20 @@ def test_group_same_title_no_page_num_merged():
     assert _group_image_pages(signals) == [[0, 1, 2]]
 
 
+def test_group_same_title_ocr_variation_merged():
+    """OCR spacing/case variations of the same title are treated as the same document.
+
+    'VEHICLE BUYERS ORDER' vs 'VEHICLEBUYERS ORDER' (missing space) both normalise
+    to 'VEHICLEBUYERSORDER' and must be merged rather than split.
+    """
+    signals = [
+        (0, _sig("NEW_DOC", "VEHICLE BUYERS ORDER")),
+        (1, _sig("NEW_DOC", "VEHICLEBUYERS ORDER")),   # missing space — OCR variant
+        (2, _sig("NEW_DOC", "VEhICLE BUYERS ORDER")),  # mixed case — OCR variant
+    ]
+    assert _group_image_pages(signals) == [[0, 1, 2]]
+
+
 def test_group_same_title_different_titles_still_split():
     """Same-title merging does not suppress splits when titles change."""
     signals = [
