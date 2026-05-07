@@ -37,6 +37,12 @@ _TOP_STRIP_FRACTION = 0.25
 # Fraction of page height scanned from the bottom for "Page N of M" on image pages.
 _BOTTOM_STRIP_FRACTION = 0.15
 
+# Maximum width (pixels) for images passed to PaddleOCR.  High-resolution scans
+# (600 DPI letter page = 5100 px wide) are downscaled to this before OCR so that
+# PaddlePaddle's inference buffers stay within the container memory limit.
+# 1500 px gives ~150 DPI equivalent — more than sufficient for text recognition.
+_OCR_MAX_WIDTH = 1500
+
 # A page with at least this many extracted characters is treated as a digital text page;
 # fewer characters means the page is blank or image-only and falls back to OCR.
 _TEXT_PAGE_MIN_CHARS = 50
@@ -421,6 +427,14 @@ def _analyze_image_page(pdf_page) -> PageSignal:
     if width == 0 or height == 0:
         del pil_image
         return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
+
+    # Downscale high-resolution scans before OCR to cap PaddlePaddle's inference
+    # buffer size.  600 DPI letter pages can be 5100×6600 px (~100 MB); 1500 px
+    # wide is equivalent to ~150 DPI and gives accurate text recognition.
+    if width > _OCR_MAX_WIDTH:
+        new_height = int(height * _OCR_MAX_WIDTH / width)
+        pil_image = pil_image.resize((_OCR_MAX_WIDTH, new_height), Image.LANCZOS)
+        width, height = pil_image.size
 
     # --- Bottom strip: page-number footer detection ---
     bottom_strip = pil_image.crop((0, int(height * (1 - _BOTTOM_STRIP_FRACTION)), width, height))
