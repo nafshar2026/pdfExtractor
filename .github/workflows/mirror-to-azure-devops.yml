@@ -3,7 +3,10 @@ name: Mirror to Azure DevOps
 on:
   push:
     branches:
-      - main
+      - '**'
+  create:
+  delete:
+  workflow_dispatch:
 
 jobs:
   mirror:
