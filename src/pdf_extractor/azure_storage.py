@@ -48,6 +48,25 @@ def upload_blob(source: Path, blob_name: str) -> None:
         blob_client.upload_blob(fh, overwrite=True)
 
 
+def download_output_blob(blob_name: str, destination: Path) -> bool:
+    """Download a blob from the output container to a local path.
+
+    Returns True if the blob existed and was downloaded, False if it does not exist.
+    """
+    from azure.core.exceptions import ResourceNotFoundError
+
+    container = os.environ.get("AZURE_OUTPUT_CONTAINER", "pdfoutput")
+    client = _get_client()
+    blob_client = client.get_blob_client(container=container, blob=blob_name)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("wb") as fh:
+            fh.write(blob_client.download_blob().readall())
+        return True
+    except ResourceNotFoundError:
+        return False
+
+
 def list_input_blobs() -> list[str]:
     """Return blob names in the input container that end with '.pdf'.
 

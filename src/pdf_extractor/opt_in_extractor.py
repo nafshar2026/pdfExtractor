@@ -542,6 +542,47 @@ def write_results_to_excel(results: list[dict], output_xlsx: str | Path) -> None
     _logger.info("Wrote %d rows to %s", len(results), output_xlsx)
 
 
+def append_results_to_excel(results: list[dict], output_xlsx: str | Path) -> None:
+    """Append extraction results to an existing Excel file, or create it if absent.
+
+    Loads the workbook when output_xlsx already exists and appends rows without
+    repeating the header.  Creates a fresh workbook with a bold header row when
+    the file does not exist yet.
+    """
+    try:
+        import openpyxl
+        from openpyxl.styles import Font
+    except ImportError:
+        raise ImportError("openpyxl is required: pip install openpyxl")
+
+    output_xlsx = Path(output_xlsx)
+    phone_headers = [f"Phone {i + 1}" for i in range(_MAX_PHONES)]
+    headers = ["Last Name", "First Name"] + phone_headers + ["Consent", "Source File"]
+
+    if output_xlsx.exists():
+        wb = openpyxl.load_workbook(output_xlsx)
+        ws = wb.active
+    else:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Opt-In Results"
+        ws.append(headers)
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+
+    for data in results:
+        phones = (data.get("telemarketing_phones") or [])[:_MAX_PHONES]
+        phone_cells = phones + [""] * (_MAX_PHONES - len(phones))
+        ws.append(
+            [data.get("last_name") or "", data.get("first_name") or ""]
+            + phone_cells
+            + [data.get("opt_in_status", ""), data.get("source_file", "")]
+        )
+
+    wb.save(output_xlsx)
+    _logger.info("Appended %d rows to %s", len(results), output_xlsx)
+
+
 def process_folder_to_excel(
     input_folder: str | Path,
     output_xlsx: str | Path,
