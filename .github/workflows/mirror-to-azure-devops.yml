@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - '**'
+  create:
+  delete:
+  workflow_dispatch:
 
 jobs:
   mirror:
