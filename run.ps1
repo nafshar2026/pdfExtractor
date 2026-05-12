@@ -32,7 +32,13 @@
 #        RouteOne*    → All files matching pattern (RouteOne.pdf)
 #      (Optionally include opt-in extraction to Excel)
 #   4. View outputs              - Show split folders, Excel files, recent logs
-#   5. Switch to Azure mode      - Change to cloud-based splitting
+#   5. Configure settings        - Customize input/output directories
+#   6. Switch to Azure mode      - Change to cloud-based splitting
+#
+# CONFIGURATION:
+#   Settings are saved to: run-config.json (in repo root)
+#   Each location can have different input/output paths
+#   Paths persist between runs and can be reset to defaults
 #
 # SETUP (ONE-TIME):
 #   Local mode:
@@ -60,7 +66,8 @@ param(
     [string]$Mode,        # Force mode: "local" or "azure"
     [string]$File,        # Non-interactive: file to process
     [switch]$OptIn,       # Include opt-in extraction
-    [switch]$Help         # Display help and exit
+    [switch]$Help,        # Display help and exit
+    [string]$Config       # Path to config file (defaults to run-config.json)
 )
 
 $ErrorActionPreference = "Continue"
@@ -70,11 +77,21 @@ $REPO_ROOT = $PSScriptRoot
 if (-not $REPO_ROOT) { $REPO_ROOT = (Get-Location).Path }
 Push-Location $REPO_ROOT
 
-# Paths
+# Config file path
+if (-not $Config) {
+    $Config = Join-Path $REPO_ROOT "run-config.json"
+}
+
+# Paths (defaults)
 $VENV = Join-Path $REPO_ROOT ".venv\Scripts\python.exe"
-$DATA_DIR = Join-Path $REPO_ROOT "src\pdf_extractor\Data"
-$OUTPUT_DIR = Join-Path $REPO_ROOT "output"
-$LOG_DIR = Join-Path $OUTPUT_DIR "job-logs"
+$DATA_DIR_DEFAULT = Join-Path $REPO_ROOT "src\pdf_extractor\Data"
+$OUTPUT_DIR_DEFAULT = Join-Path $REPO_ROOT "output"
+$LOG_DIR_DEFAULT = Join-Path $OUTPUT_DIR_DEFAULT "job-logs"
+
+# These will be overridden by config
+$DATA_DIR = $DATA_DIR_DEFAULT
+$OUTPUT_DIR = $OUTPUT_DIR_DEFAULT
+$LOG_DIR = $LOG_DIR_DEFAULT
 
 # Azure defaults
 $RESOURCE_GROUP = "nader-test-rag"
@@ -108,7 +125,8 @@ function Show-Help {
     Write-Host "    2 = Process all PDFs" -ForegroundColor DarkCyan
     Write-Host "    3 = Process by pattern (e.g., 6*, Sample-*)" -ForegroundColor DarkCyan
     Write-Host "    4 = View outputs (split folders, Excel files, logs)" -ForegroundColor DarkCyan
-    Write-Host "    5 = Switch to Azure mode" -ForegroundColor DarkCyan
+    Write-Host "    5 = Configure settings (input/output paths)" -ForegroundColor DarkCyan
+    Write-Host "    6 = Switch to Azure mode" -ForegroundColor DarkCyan
     Write-Host ""
     Write-Host "AZURE MODE (cloud-based splitting):" -ForegroundColor Yellow
     Write-Host "  .\run.ps1 -Mode azure                  # Interactive Azure menu (requires az CLI)" -ForegroundColor White
@@ -120,7 +138,8 @@ function Show-Help {
     Write-Host "    4 = List output files in blob storage" -ForegroundColor DarkCyan
     Write-Host "    5 = Rebuild Docker image" -ForegroundColor DarkCyan
     Write-Host "    6 = View job logs" -ForegroundColor DarkCyan
-    Write-Host "    7 = Switch to local mode" -ForegroundColor DarkCyan
+    Write-Host "    7 = Configure local output settings" -ForegroundColor DarkCyan
+    Write-Host "    8 = Switch to local mode" -ForegroundColor DarkCyan
     Write-Host ""
     Write-Host "INPUT/OUTPUT:" -ForegroundColor Yellow
     Write-Host "  Input PDFs:     src/pdf_extractor/Data/" -ForegroundColor DarkCyan
@@ -167,6 +186,49 @@ function Require-AzureAuth {
         az login | Out-Null
     }
     Write-Host "Logged in as: $account" -ForegroundColor Green
+}
+
+function Load-Config {
+    if (Test-Path $Config) {
+        try {
+            return Get-Content $Config -Raw | ConvertFrom-Json
+        } catch {
+            Write-Host "Warning: Config file exists but is invalid. Using defaults." -ForegroundColor Yellow
+            return $null
+        }
+    }
+    return $null
+}
+
+function Save-Config {
+    $cfg = @{
+        data_dir    = $DATA_DIR
+        output_dir  = $OUTPUT_DIR
+        log_dir     = $LOG_DIR
+        last_updated = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+    }
+    $cfg | ConvertTo-Json | Out-File -FilePath $Config -Encoding utf8
+    Write-Host "Config saved to: $Config" -ForegroundColor Green
+}
+
+function Show-ConfigMenu {
+    Clear-Host
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host "  Configuration Settings" -ForegroundColor Cyan
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Current Settings:" -ForegroundColor Yellow
+    Write-Host "    Input PDFs:   $DATA_DIR" -ForegroundColor DarkCyan
+    Write-Host "    Output Files: $OUTPUT_DIR" -ForegroundColor DarkCyan
+    Write-Host "    Job Logs:     $LOG_DIR" -ForegroundColor DarkCyan
+    Write-Host ""
+    Write-Host "  1. Change input PDF directory" -ForegroundColor White
+    Write-Host "  2. Change output directory" -ForegroundColor White
+    Write-Host "  3. Reset to defaults" -ForegroundColor White
+    Write-Host "  4. View config file location" -ForegroundColor White
+    Write-Host "  0. Back" -ForegroundColor White
+    Write-Host ""
+    Write-Host "============================================================" -ForegroundColor Cyan
 }
 
 function Initialize-Dirs {
@@ -282,7 +344,8 @@ function Show-LocalMenu {
     Write-Host "  2. Process all PDFs" -ForegroundColor White
     Write-Host "  3. Process by pattern (e.g., 6* or Sample-*)" -ForegroundColor White
     Write-Host "  4. View outputs" -ForegroundColor White
-    Write-Host "  5. Switch to Azure mode" -ForegroundColor White
+    Write-Host "  5. Configure settings (input/output paths)" -ForegroundColor White
+    Write-Host "  6. Switch to Azure mode" -ForegroundColor White
     Write-Host "  0. Exit" -ForegroundColor White
     Write-Host ""
     Write-Host "============================================================" -ForegroundColor Cyan
@@ -312,7 +375,8 @@ function Show-AzureMenu {
     Write-Host "  4. List output files in blob storage" -ForegroundColor White
     Write-Host "  5. Rebuild Docker image" -ForegroundColor White
     Write-Host "  6. View job logs" -ForegroundColor White
-    Write-Host "  7. Switch to local mode" -ForegroundColor White
+    Write-Host "  7. Configure local output settings" -ForegroundColor White
+    Write-Host "  8. Switch to local mode" -ForegroundColor White
     Write-Host "  0. Exit" -ForegroundColor White
     Write-Host ""
     Write-Host "============================================================" -ForegroundColor Cyan
@@ -373,6 +437,15 @@ function Process-PatternSelect([string]$pattern, [bool]$withOptIn) {
 # ==================== Main ====================
 
 Initialize-Dirs
+
+# Load configuration
+$cfg = Load-Config
+if ($cfg) {
+    if ($cfg.data_dir -and (Test-Path $cfg.data_dir)) { $DATA_DIR = $cfg.data_dir }
+    if ($cfg.output_dir) { $OUTPUT_DIR = $cfg.output_dir; $LOG_DIR = Join-Path $OUTPUT_DIR "job-logs" }
+    if ($cfg.log_dir -and (Test-Path (Split-Path $cfg.log_dir))) { $LOG_DIR = $cfg.log_dir }
+    Initialize-Dirs  # Re-initialize with new paths
+}
 
 # Check for help flag
 if ($Help) {
@@ -498,6 +571,76 @@ if ($Mode -eq "local") {
             }
             
             "5" {
+                # Configuration menu
+                while ($true) {
+                    Show-ConfigMenu
+                    $cfgChoice = Read-Host "Enter choice"
+                    
+                    switch ($cfgChoice) {
+                        "1" {
+                            $newPath = Read-Host "Enter full path to input PDF directory"
+                            if ($newPath -and (Test-Path $newPath)) {
+                                $DATA_DIR = $newPath
+                                Write-Host "Input directory updated to: $DATA_DIR" -ForegroundColor Green
+                                Save-Config
+                            } else {
+                                Write-Host "Path not found or invalid." -ForegroundColor Red
+                            }
+                            Read-Host "Press Enter to continue"
+                        }
+                        
+                        "2" {
+                            $newPath = Read-Host "Enter full path to output directory"
+                            if ($newPath) {
+                                $OUTPUT_DIR = $newPath
+                                $LOG_DIR = Join-Path $OUTPUT_DIR "job-logs"
+                                Initialize-Dirs
+                                Write-Host "Output directory updated to: $OUTPUT_DIR" -ForegroundColor Green
+                                Save-Config
+                            } else {
+                                Write-Host "Invalid path." -ForegroundColor Red
+                            }
+                            Read-Host "Press Enter to continue"
+                        }
+                        
+                        "3" {
+                            $DATA_DIR = $DATA_DIR_DEFAULT
+                            $OUTPUT_DIR = $OUTPUT_DIR_DEFAULT
+                            $LOG_DIR = $LOG_DIR_DEFAULT
+                            Initialize-Dirs
+                            Write-Host "Settings reset to defaults." -ForegroundColor Green
+                            Save-Config
+                            Read-Host "Press Enter to continue"
+                        }
+                        
+                        "4" {
+                            Write-Host ""
+                            Write-Host "Config file location: $Config" -ForegroundColor Yellow
+                            if (Test-Path $Config) {
+                                Write-Host "Config file exists." -ForegroundColor Green
+                                Write-Host ""
+                                Write-Host "Content:" -ForegroundColor Yellow
+                                Get-Content $Config | Write-Host
+                            } else {
+                                Write-Host "Config file not created yet." -ForegroundColor Yellow
+                            }
+                            Write-Host ""
+                            Read-Host "Press Enter to continue"
+                        }
+                        
+                        "0" {
+                            break
+                        }
+                        
+                        default {
+                            Write-Host "Invalid choice (0-4)." -ForegroundColor Red
+                            Read-Host "Press Enter to continue"
+                        }
+                    }
+                }
+            }
+            
+            "6" {
                 $Mode = "azure"
                 break
             }
@@ -509,7 +652,7 @@ if ($Mode -eq "local") {
             }
             
             default {
-                Write-Host "Invalid choice (0-5)." -ForegroundColor Red
+                Write-Host "Invalid choice (0-6)." -ForegroundColor Red
                 Read-Host "Press Enter to continue"
             }
         }
@@ -611,6 +754,76 @@ if ($Mode -eq "azure") {
             }
             
             "7" {
+                # Configuration menu
+                while ($true) {
+                    Show-ConfigMenu
+                    $cfgChoice = Read-Host "Enter choice"
+                    
+                    switch ($cfgChoice) {
+                        "1" {
+                            $newPath = Read-Host "Enter full path to input PDF directory (for local download)"
+                            if ($newPath -and (Test-Path $newPath)) {
+                                $DATA_DIR = $newPath
+                                Write-Host "Input directory updated to: $DATA_DIR" -ForegroundColor Green
+                                Save-Config
+                            } else {
+                                Write-Host "Path not found or invalid." -ForegroundColor Red
+                            }
+                            Read-Host "Press Enter to continue"
+                        }
+                        
+                        "2" {
+                            $newPath = Read-Host "Enter full path to output directory (for local downloads)"
+                            if ($newPath) {
+                                $OUTPUT_DIR = $newPath
+                                $LOG_DIR = Join-Path $OUTPUT_DIR "job-logs"
+                                Initialize-Dirs
+                                Write-Host "Output directory updated to: $OUTPUT_DIR" -ForegroundColor Green
+                                Save-Config
+                            } else {
+                                Write-Host "Invalid path." -ForegroundColor Red
+                            }
+                            Read-Host "Press Enter to continue"
+                        }
+                        
+                        "3" {
+                            $DATA_DIR = $DATA_DIR_DEFAULT
+                            $OUTPUT_DIR = $OUTPUT_DIR_DEFAULT
+                            $LOG_DIR = $LOG_DIR_DEFAULT
+                            Initialize-Dirs
+                            Write-Host "Settings reset to defaults." -ForegroundColor Green
+                            Save-Config
+                            Read-Host "Press Enter to continue"
+                        }
+                        
+                        "4" {
+                            Write-Host ""
+                            Write-Host "Config file location: $Config" -ForegroundColor Yellow
+                            if (Test-Path $Config) {
+                                Write-Host "Config file exists." -ForegroundColor Green
+                                Write-Host ""
+                                Write-Host "Content:" -ForegroundColor Yellow
+                                Get-Content $Config | Write-Host
+                            } else {
+                                Write-Host "Config file not created yet." -ForegroundColor Yellow
+                            }
+                            Write-Host ""
+                            Read-Host "Press Enter to continue"
+                        }
+                        
+                        "0" {
+                            break
+                        }
+                        
+                        default {
+                            Write-Host "Invalid choice (0-4)." -ForegroundColor Red
+                            Read-Host "Press Enter to continue"
+                        }
+                    }
+                }
+            }
+            
+            "8" {
                 $Mode = "local"
                 break
             }
@@ -622,7 +835,7 @@ if ($Mode -eq "azure") {
             }
             
             default {
-                Write-Host "Invalid choice (0-7)." -ForegroundColor Red
+                Write-Host "Invalid choice (0-8)." -ForegroundColor Red
                 Read-Host "Press Enter to continue"
             }
         }
