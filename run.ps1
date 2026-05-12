@@ -210,8 +210,9 @@ function Show-LocalMenu {
     Write-Host ""
     Write-Host "  1. Process one PDF" -ForegroundColor White
     Write-Host "  2. Process all PDFs" -ForegroundColor White
-    Write-Host "  3. View outputs" -ForegroundColor White
-    Write-Host "  4. Switch to Azure mode" -ForegroundColor White
+    Write-Host "  3. Process by pattern (e.g., 6* or Sample-*)" -ForegroundColor White
+    Write-Host "  4. View outputs" -ForegroundColor White
+    Write-Host "  5. Switch to Azure mode" -ForegroundColor White
     Write-Host "  0. Exit" -ForegroundColor White
     Write-Host ""
     Write-Host "============================================================" -ForegroundColor Cyan
@@ -264,6 +265,38 @@ function Show-LocalOutputs {
     Write-Host "Job logs (recent):" -ForegroundColor Yellow
     Get-ChildItem -Path $LOG_DIR -Filter "*.log" 2>$null | Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {
         Write-Host "  $_"
+    }
+}
+
+function Process-PatternSelect([string]$pattern, [bool]$withOptIn) {
+    $pdfs = Get-LocalPdfs
+    # Match pattern: convert wildcard to regex (6* → 6.*, Sample-* → Sample-.*)
+    $regexPattern = "^" + [regex]::Escape($pattern).Replace("\*", ".*") + "\.pdf$"
+    $matched = $pdfs | Where-Object { $_.Name -match $regexPattern }
+    
+    if ($matched.Count -eq 0) {
+        Write-Host "No files match pattern '$pattern'" -ForegroundColor Yellow
+        return
+    }
+    
+    Write-Host ""
+    Write-Host "Matched files:" -ForegroundColor Green
+    $matched | ForEach-Object { Write-Host "  - $($_.Name)" }
+    Write-Host ""
+    
+    $confirm = Read-Host "Process these $($matched.Count) file(s)? (y/n)"
+    if ($confirm -ne "y") {
+        Write-Host "Cancelled." -ForegroundColor Yellow
+        return
+    }
+    
+    foreach ($pdf in $matched) {
+        $outDir = Get-OutputSplitDir $pdf.Name
+        $ok = Invoke-Split $pdf.FullName $outDir
+        if ($ok -and $withOptIn) {
+            $excelPath = Get-OutputExcelFile $pdf.Name
+            Invoke-OptInExtraction $outDir $excelPath | Out-Null
+        }
     }
 }
 
@@ -368,11 +401,26 @@ if ($Mode -eq "local") {
             }
             
             "3" {
-                Show-LocalOutputs
+                $pattern = Read-Host "Enter file pattern (e.g., 6* or Sample-*)"
+                if (-not $pattern) {
+                    Write-Host "No pattern entered." -ForegroundColor Yellow
+                    Read-Host "Press Enter to continue"
+                    continue
+                }
+                
+                $resp = Read-Host "Include opt-in extraction? (y/n)"
+                $withOpt = $resp -eq "y"
+                
+                Process-PatternSelect $pattern $withOpt
                 Read-Host "Press Enter to continue"
             }
             
             "4" {
+                Show-LocalOutputs
+                Read-Host "Press Enter to continue"
+            }
+            
+            "5" {
                 $Mode = "azure"
                 break
             }
@@ -384,7 +432,7 @@ if ($Mode -eq "local") {
             }
             
             default {
-                Write-Host "Invalid choice (0-4)." -ForegroundColor Red
+                Write-Host "Invalid choice (0-5)." -ForegroundColor Red
                 Read-Host "Press Enter to continue"
             }
         }
