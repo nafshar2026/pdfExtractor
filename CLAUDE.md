@@ -17,6 +17,7 @@ src/pdf_extractor/
     extractor.py        # Core pypdf utilities and data models
     image_splitter.py   # Unified split_pdf() entry point + all boundary-detection logic
     cli.py              # argparse CLI wired to split_pdf()
+    opt_in_extractor.py # Credit application opt-in extraction (text + vision)
     genpdf.py           # Utility: generates text-based test PDFs via reportlab
 
 tests/
@@ -47,6 +48,71 @@ py -3.11 -m venv .venv
 
 # Generate the sample multi-document test PDF (text-based)
 .venv/Scripts/python src/pdf_extractor/genpdf.py
+
+# Extract opt-in data from credit applications to Excel
+.venv/Scripts/python -c "from pdf_extractor.opt_in_extractor import process_folder_to_excel; process_folder_to_excel('output/split-1', 'output/opt_in_results.xlsx')"
+```
+
+---
+
+## Opt-In Extraction (`opt_in_extractor.py`)
+
+Extracts telemarketing opt-in status and contact information from DealerTrack and RouteOne credit application forms.
+
+### Supported Forms
+
+| Form Type  | Pages         | Text Extraction             | Image Extraction       |
+|------------|---------------|-----------------------------|-----------------------|
+| RouteOne   | 2-3 pages     | Name + phones from text; opt-in from 2nd signature date | Full vision fallback |
+| DealerTrack| 1-2 pages     | Name + phones from text; opt-in via vision checkbox only | Full vision fallback |
+
+### Return Format (JSON)
+
+```json
+{
+  "form_type": "routeone" | "dealertrack" | "unknown",
+  "last_name": "<string or null>",
+  "first_name": "<string or null>",
+  "opt_in_status": "opted_in" | "opted_out" | "unclear" | "not_found",
+  "telemarketing_phones": ["<phone>", ...],
+  "confidence": "high" | "medium" | "low"
+}
+```
+
+### Extraction Logic
+
+**RouteOne (text path):**
+- Name: parsed from "Credit Application: Applicant" line
+- Phones: extracted from "at the following telephone number(s):" section
+- Opt-in: presence of date on the **Optional Consent applicant signature line** (SECOND signature)
+
+**DealerTrack (text path):**
+- Name: parsed from SSN-anchored pattern (LAST FIRST followed by SSN)
+- Phones: extracted from blank space between "at the following number(s)" and "including any cell phone numbers"
+- Opt-in: requires vision to detect checkbox mark (text path only yields name + phones)
+
+**Vision fallback (scanned pages):**
+- All forms: GPT-4V vision extraction with form-specific prompts
+- Requires Azure OpenAI endpoint and API key in `.env`
+
+### Usage
+
+**Single PDF:**
+```python
+from pypdf import PdfReader
+from pdf_extractor.opt_in_extractor import extract_credit_app_data
+
+reader = PdfReader("Credit_Application.pdf")
+result = extract_credit_app_data(reader)
+print(result)
+```
+
+**Batch (folder to Excel):**
+```python
+from pdf_extractor.opt_in_extractor import process_folder_to_excel
+
+# Reads all *.pdf files from input_dir, extracts data, writes to output_xlsx
+process_folder_to_excel("output/split-routeone", "output/opt_in_results-routeone.xlsx")
 ```
 
 ---

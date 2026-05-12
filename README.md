@@ -94,6 +94,39 @@ Connection string).
 .venv\Scripts\python -m pytest tests/ -v
 ```
 
+### Extract opt-in data (DealerTrack & RouteOne credit applications)
+
+After splitting PDFs, you can extract telemarketing opt-in status and contact information from credit application forms:
+
+```powershell
+# Split the PDF first
+.venv\Scripts\python -m pdf_extractor.cli src/pdf_extractor/Data/RouteOne.pdf --split-documents --split-output-dir output/split-routeone
+
+# Then extract opt-in data to Excel
+.venv\Scripts\python -c "from pdf_extractor.opt_in_extractor import process_folder_to_excel; process_folder_to_excel('output/split-routeone', 'output/opt_in_results-routeone.xlsx')"
+```
+
+Or use the interactive local menu (recommended):
+
+```powershell
+.\run-local.ps1
+```
+
+Menu options include splitting with and without opt-in extraction in one command.
+
+**Supported forms:**
+- **RouteOne** (digital or scanned): Extracts name, phone numbers, and opt-in status from the "Optional Consent" signature line
+- **DealerTrack** (digital or scanned): Extracts name, phone numbers, and opt-in status from the "You opt in / You do not opt in" checkbox
+
+**Output:** Excel file at `output/opt_in_results-<filename>.xlsx` with columns:
+- Filename
+- Form Type
+- Last Name
+- First Name
+- Opt-In Status (opted_in / opted_out / unclear)
+- Telemarketing Phones
+- Confidence (high / medium / low)
+
 ---
 
 ## Repository layout
@@ -103,6 +136,7 @@ src/pdf_extractor/
     extractor.py        # Core pypdf utilities and data models
     image_splitter.py   # split_pdf() entry point and all boundary-detection logic
     cli.py              # argparse CLI — local and Azure modes
+    opt_in_extractor.py # Credit application opt-in extraction (text + vision)
     azure_storage.py    # Azure Blob Storage download/upload helpers
     genpdf.py           # Utility: generates text-based test PDFs
 
@@ -112,6 +146,7 @@ tests/
 
 Dockerfile              # Container image definition
 run.ps1                 # Interactive Azure operations menu (share this with users)
+run-local.ps1           # Interactive local operations menu (split + opt-in extraction)
 azure-deploy.sh         # One-time infrastructure setup commands (admin use only)
 .env.example            # Template for local environment variables
 ```

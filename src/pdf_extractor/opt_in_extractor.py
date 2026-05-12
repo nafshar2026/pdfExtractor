@@ -81,6 +81,14 @@ _RO_PHONES_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Credit Application signature section: look for the FIRST signature line to check
+# if it has a date. If the first (mandatory) signature has no extractable date,
+# both signatures are likely handwritten/images, so we should use vision.
+_RO_CREDIT_APP_SIG_RE = re.compile(
+    r"Credit Application Signature\s*Applicant:\s*By\s+Date(.*?)(?:Optional Consent|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
 # Optional Consent section: capture everything between the section header and
 # "Source:" (the footer line) so we can look for a date on the consent sig line.
 # A blank span means no date was written → opted_out.
@@ -151,8 +159,27 @@ def _unique_phones(raw_list: list[str]) -> list[str]:
 # Text-path extractors
 # ---------------------------------------------------------------------------
 
+def _routeone_has_first_signature_date(text: str) -> bool:
+    """Check if the first (Credit Application) signature has an extractable date.
+    
+    If the first signature (which is mandatory) has no extractable date, both
+    signatures are likely handwritten/images. In that case, vision extraction
+    should be used instead of text extraction.
+    """
+    m = _RO_CREDIT_APP_SIG_RE.search(text)
+    if m:
+        first_sig_tail = m.group(1).strip()
+        return bool(_DATE_RE.search(first_sig_tail))
+    return False
+
+
 def _routeone_from_text(text: str) -> dict:
-    """Extract all RouteOne fields from digital text — no vision needed."""
+    """Extract all RouteOne fields from digital text — no vision needed.
+    
+    Returns a dict with an additional key 'has_first_sig_date' to indicate
+    whether the first (mandatory) signature date was found. If False, the
+    caller should fall back to vision extraction.
+    """
     # --- Name ---
     last_name: str | None = None
     first_name: str | None = None
@@ -180,12 +207,16 @@ def _routeone_from_text(text: str) -> dict:
         if _DATE_RE.search(consent_tail):
             opt_in_status = "opted_in"
 
+    # Check if first signature has a date (used for vision fallback detection)
+    has_first_sig_date = _routeone_has_first_signature_date(text)
+
     return {
         "last_name": last_name,
         "first_name": first_name,
         "opt_in_status": opt_in_status,
         "telemarketing_phones": phones,
         "confidence": "high",
+        "has_first_sig_date": has_first_sig_date,  # For fallback detection
     }
 
 
@@ -258,6 +289,14 @@ def _to_b64(image: Image.Image) -> str:
 
 
 def _get_client(model: str | None = None):
+    # Allow direct module usage (without cli.py) to pick up local .env changes.
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(override=True)
+    except ImportError:
+        pass
+
     endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
     api_key = os.environ.get("AZURE_OPENAI_API_KEY")
     if not endpoint or not api_key:
@@ -322,6 +361,31 @@ Extract the following and return valid JSON only — no markdown, no explanation
   "opt_in_status": "opted_in" | "opted_out" | "unclear",
   "telemarketing_phones": ["<phone>", ...],
   "confidence": "high" | "medium" | "low"
+}
+"""
+
+_RO_OPTIN_ONLY_VISION_PROMPT = """\
+You are reviewing RouteOne credit application pages to determine ONLY the
+Optional Consent telemarketing opt-in status.
+
+There are TWO signature areas:
+1) Credit Application Signature (required)
+2) Optional Consent (telemarketing)
+
+IGNORE the first signature entirely.
+Look only at the Optional Consent applicant signature/date line (the SECOND
+signature area).
+
+Rules:
+- If a visible handwritten signature or visible written date appears on the
+    Optional Consent line, return opted_in.
+- If the Optional Consent line appears blank (no writing), return opted_out.
+- If image quality prevents a determination, return unclear.
+
+Return valid JSON only:
+{
+    "opt_in_status": "opted_in" | "opted_out" | "unclear",
+    "confidence": "high" | "medium" | "low"
 }
 """
 
@@ -419,10 +483,32 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
     text_heavy = _is_text_heavy(pdf_reader)
 
     # ------------------------------------------------------------------
-    # ROUTEONE — digital text path
+    # ROUTEONE — digital text path (with vision fallback for handwritten sigs)
     # ------------------------------------------------------------------
     if form_type == "routeone" and text_heavy:
         data = _routeone_from_text(text)
+        # If the first (mandatory) signature has no extractable date, both
+        # signatures are likely handwritten/images. Fall back to vision.
+        if not data.pop("has_first_sig_date", True):
+            _logger.info(
+                "extract_credit_app_data: RouteOne first signature has no extractable date; "
+                "falling back to vision extraction"
+            )
+            # Keep name/phones from text and use vision only for opt-in status.
+            vision = _call_vision(
+                list(pdf_reader.pages), _RO_OPTIN_ONLY_VISION_PROMPT, model=model
+            )
+            opt_in_status = vision.get("opt_in_status")
+            if opt_in_status not in {"opted_in", "opted_out"}:
+                opt_in_status = data.get("opt_in_status", "opted_out")
+            return {
+                "form_type": "routeone",
+                "last_name": data.get("last_name"),
+                "first_name": data.get("first_name"),
+                "opt_in_status": opt_in_status,
+                "telemarketing_phones": data.get("telemarketing_phones") or [],
+                "confidence": vision.get("confidence", "medium"),
+            }
         data["form_type"] = "routeone"
         return data
 
