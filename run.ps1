@@ -59,7 +59,8 @@
 param(
     [string]$Mode,        # Force mode: "local" or "azure"
     [string]$File,        # Non-interactive: file to process
-    [switch]$OptIn        # Include opt-in extraction
+    [switch]$OptIn,       # Include opt-in extraction
+    [switch]$Help         # Display help and exit
 )
 
 $ErrorActionPreference = "Continue"
@@ -88,6 +89,53 @@ $azPath = "C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin"
 if (Test-Path $azPath) { $env:PATH += ";$azPath" }
 
 # ==================== Helper Functions ====================
+
+function Show-Help {
+    Write-Host ""
+    Write-Host "pdf-extractor - Unified PDF Splitting Tool" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "USAGE:" -ForegroundColor Yellow
+    Write-Host "  .\run.ps1                              # Interactive menu (choose local or Azure)" -ForegroundColor White
+    Write-Host "  .\run.ps1 -Help                        # Show this help" -ForegroundColor White
+    Write-Host ""
+    Write-Host "LOCAL MODE (split on your machine):" -ForegroundColor Yellow
+    Write-Host "  .\run.ps1 -Mode local                  # Interactive local menu" -ForegroundColor White
+    Write-Host "  .\run.ps1 -Mode local -File PDF.pdf    # Split single file" -ForegroundColor White
+    Write-Host "  .\run.ps1 -Mode local -File PDF.pdf -OptIn  # Split + extract opt-in to Excel" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  Local Menu Options:" -ForegroundColor DarkCyan
+    Write-Host "    1 = Process one PDF (select by number)" -ForegroundColor DarkCyan
+    Write-Host "    2 = Process all PDFs" -ForegroundColor DarkCyan
+    Write-Host "    3 = Process by pattern (e.g., 6*, Sample-*)" -ForegroundColor DarkCyan
+    Write-Host "    4 = View outputs (split folders, Excel files, logs)" -ForegroundColor DarkCyan
+    Write-Host "    5 = Switch to Azure mode" -ForegroundColor DarkCyan
+    Write-Host ""
+    Write-Host "AZURE MODE (cloud-based splitting):" -ForegroundColor Yellow
+    Write-Host "  .\run.ps1 -Mode azure                  # Interactive Azure menu (requires az CLI)" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  Azure Menu Options:" -ForegroundColor DarkCyan
+    Write-Host "    1 = Run job on current file" -ForegroundColor DarkCyan
+    Write-Host "    2 = Pick different file and run" -ForegroundColor DarkCyan
+    Write-Host "    3 = Check last run status" -ForegroundColor DarkCyan
+    Write-Host "    4 = List output files in blob storage" -ForegroundColor DarkCyan
+    Write-Host "    5 = Rebuild Docker image" -ForegroundColor DarkCyan
+    Write-Host "    6 = View job logs" -ForegroundColor DarkCyan
+    Write-Host "    7 = Switch to local mode" -ForegroundColor DarkCyan
+    Write-Host ""
+    Write-Host "INPUT/OUTPUT:" -ForegroundColor Yellow
+    Write-Host "  Input PDFs:     src/pdf_extractor/Data/" -ForegroundColor DarkCyan
+    Write-Host "  Split output:   output/split-<filename>/" -ForegroundColor DarkCyan
+    Write-Host "  Excel results:  output/opt_in_results-<filename>.xlsx" -ForegroundColor DarkCyan
+    Write-Host "  Job logs:       output/job-logs/<execution>-<timestamp>.log" -ForegroundColor DarkCyan
+    Write-Host ""
+    Write-Host "SETUP (ONE-TIME):" -ForegroundColor Yellow
+    Write-Host "  Local mode:" -ForegroundColor DarkCyan
+    Write-Host "    py -3.11 -m venv .venv" -ForegroundColor Gray
+    Write-Host "    .venv\Scripts\pip install -e `".[dev]`"" -ForegroundColor Gray
+    Write-Host "  Azure mode:" -ForegroundColor DarkCyan
+    Write-Host "    Download Azure CLI: https://aka.ms/installazurecliwindows" -ForegroundColor Gray
+    Write-Host ""
+}
 
 function Require-LocalPrereqs {
     if (-not (Test-Path $VENV)) {
@@ -325,6 +373,13 @@ function Process-PatternSelect([string]$pattern, [bool]$withOptIn) {
 # ==================== Main ====================
 
 Initialize-Dirs
+
+# Check for help flag
+if ($Help) {
+    Show-Help
+    Pop-Location
+    exit 0
+}
 
 # Mode selection
 if (-not $Mode) {
