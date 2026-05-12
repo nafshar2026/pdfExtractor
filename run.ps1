@@ -1,240 +1,507 @@
+﻿# ===========================================================================
+# pdf-extractor - Unified PDF Splitting Tool (Local + Azure)
 # ===========================================================================
-# pdf-extractor - Azure operations menu
-# ===========================================================================
 #
-# WHAT THIS DOES:
-#   Splits multi-document PDFs (e.g. auto-finance deal jackets) into one PDF
-#   per logical document. Input files are read from Azure Blob Storage and
-#   split output files are written back to Azure Blob Storage.
+# QUICK START:
+#   .\run.ps1
+#   Choose between Local (fast, on your machine) or Azure (cloud-based)
 #
-# HOW TO RUN:
-#   Save this file anywhere on your machine, open PowerShell, and run:
-#     .\run.ps1
-#   An interactive menu will guide you through all operations.
+# WHAT IT DOES:
+#   Splits multi-document PDFs (e.g. auto-finance deal jackets) into one
+#   PDF per logical document. Uses AI-based page detection to find boundaries.
+#   - Generates Excel files with opt-in extraction (optional)
+#   - Saves all logs to output/job-logs/ with timestamps
+#   - Works on local machine OR Azure Container Apps
 #
-# MENU OPTIONS:
-#   1. Run job on current file    - process the currently configured input file
-#   2. Change target file and run - pick a different PDF from blob storage and run
-#   3. Check status of last run   - see if the last job succeeded or failed
-#   4. List output files          - browse split PDFs written to blob storage
-#   5. Rebuild Docker image       - use after code changes (admin only)
-#   6. Show logs from last run    - diagnose failures
+# SUPPORTED MODES:
+#   LOCAL  - Fast splitting on your machine (minutes)
+#            Input:  src/pdf_extractor/Data/*.pdf
+#            Output: output/split-*/ and output/opt_in_results-*.xlsx
 #
-# PREREQUISITES (one-time setup):
-#   1. Azure CLI installed
-#      Ask your admin to install it. Download from:
-#      https://aka.ms/installazurecliwindows
+#   AZURE  - Cloud-based splitting (via Container Apps)
+#            Input:  Azure Blob Storage (pdfinput container)
+#            Output: Azure Blob Storage (pdfoutput container) + local Excel
 #
-#   2. Contributor access to the nader-test-rag resource group
-#      Ask the project owner to add you:
-#      Azure Portal -> nader-test-rag -> Access Control (IAM) -> Add role assignment
-#      -> Role: Contributor -> assign to your email address
+# SETUP (ONE-TIME):
+#   Local mode:
+#     py -3.11 -m venv .venv
+#     .venv\Scripts\pip install -e ".[dev]"
 #
-# BEFORE EACH SESSION (every 8 hours):
-#   Your Azure access expires every 8 hours due to PIM (Privileged Identity
-#   Management). Before running this script each day, activate your role:
-#     Azure Portal -> search "Privileged Identity Management"
-#     -> My Roles -> Eligible assignments -> Activate next to your role
-#   Then run this script - it will prompt you to log in automatically.
+#   Azure mode:
+#     Download Azure CLI: https://aka.ms/installazurecliwindows
+#     Ensure you have Contributor access to nader-test-rag resource group
+#     (Ask project owner to add you via Azure Portal IAM)
 #
-# WHERE FILES LIVE:
-#   Input PDFs  -> Azure Portal -> naderblob02 -> pdfinput container
-#   Output PDFs -> Azure Portal -> naderblob02 -> pdfoutput container
-#   Upload new input PDFs via the Portal: naderblob02 -> pdfinput -> Upload
-#
-# FULL DOCUMENTATION:
-#   https://github.com/nafshar2026/pdfExtractor (README.md)
-#
-# SUPPORT:
-#   Contact the project owner: nader.afshar@stellantis-fs.com
 # ===========================================================================
 
-# Azure resource names (do not change)
-$RESOURCE_GROUP  = "nader-test-rag"
-$JOB_NAME        = "pdf-extractor-job"
-$ACR_NAME        = "NaderContainerRegistry"
+param(
+    [string]$Mode,        # Force mode: "local" or "azure"
+    [string]$File,        # Non-interactive: file to process
+    [switch]$OptIn        # Include opt-in extraction
+)
+
+$ErrorActionPreference = "Continue"
+Set-StrictMode -Version Latest
+
+$REPO_ROOT = $PSScriptRoot
+if (-not $REPO_ROOT) { $REPO_ROOT = (Get-Location).Path }
+Push-Location $REPO_ROOT
+
+# Paths
+$VENV = Join-Path $REPO_ROOT ".venv\Scripts\python.exe"
+$DATA_DIR = Join-Path $REPO_ROOT "src\pdf_extractor\Data"
+$OUTPUT_DIR = Join-Path $REPO_ROOT "output"
+$LOG_DIR = Join-Path $OUTPUT_DIR "job-logs"
+
+# Azure defaults
+$RESOURCE_GROUP = "nader-test-rag"
+$JOB_NAME = "pdf-extractor-job"
+$ACR_NAME = "NaderContainerRegistry"
 $STORAGE_ACCOUNT = "naderblob02"
 $INPUT_CONTAINER = "pdfinput"
 $OUTPUT_CONTAINER = "pdfoutput"
 
-# Ensure az CLI is on the PATH
+# Ensure az CLI is on PATH
 $azPath = "C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin"
-if (Test-Path $azPath) {
-    $env:PATH += ";$azPath"
-}
+if (Test-Path $azPath) { $env:PATH += ";$azPath" }
 
-function Assert-AzCli {
-    if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+# ==================== Helper Functions ====================
+
+function Require-LocalPrereqs {
+    if (-not (Test-Path $VENV)) {
+        Write-Host "ERROR: Python venv not found at .venv" -ForegroundColor Red
         Write-Host ""
-        Write-Host "ERROR: Azure CLI (az) not found." -ForegroundColor Red
-        Write-Host "Ask your admin to install it from: https://aka.ms/installazurecliwindows" -ForegroundColor Yellow
+        Write-Host "Set up Python environment:" -ForegroundColor Yellow
+        Write-Host "  py -3.11 -m venv .venv" -ForegroundColor Cyan
+        Write-Host "  .venv\Scripts\pip install -e `".[dev]`"" -ForegroundColor Cyan
+        exit 1
+    }
+    if (-not (Test-Path $DATA_DIR)) {
+        Write-Host "ERROR: Data folder not found: $DATA_DIR" -ForegroundColor Red
         exit 1
     }
 }
 
-function Assert-LoggedIn {
+function Require-AzureCli {
+    if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+        Write-Host "ERROR: Azure CLI not found" -ForegroundColor Red
+        Write-Host "Download from: https://aka.ms/installazurecliwindows" -ForegroundColor Yellow
+        exit 1
+    }
+}
+
+function Require-AzureAuth {
     $account = az account show --query "user.name" -o tsv 2>$null
     if (-not $account) {
-        Write-Host ""
-        Write-Host "Not logged in. Opening browser for login..." -ForegroundColor Yellow
+        Write-Host "Logging into Azure..." -ForegroundColor Yellow
         az login | Out-Null
-    } else {
-        Write-Host "Logged in as: $account" -ForegroundColor Green
+    }
+    Write-Host "Logged in as: $account" -ForegroundColor Green
+}
+
+function Initialize-Dirs {
+    @($OUTPUT_DIR, $LOG_DIR) | ForEach-Object {
+        if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
     }
 }
 
-function Get-CurrentTarget {
-    $query = "properties.template.containers[0].args[0]"
-    $target = az containerapp job show --name $JOB_NAME --resource-group $RESOURCE_GROUP --query $query -o tsv 2>$null
-    return $target
+function Get-LocalPdfs {
+    return @(Get-ChildItem -Path $DATA_DIR -Filter "*.pdf" -File | Sort-Object Name)
 }
 
-function Wait-ForJob {
+function Get-OutputSplitDir([string]$pdfName) {
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($pdfName)
+    return Join-Path $OUTPUT_DIR ("split-" + $stem)
+}
+
+function Get-OutputExcelFile([string]$pdfName) {
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($pdfName)
+    return Join-Path $OUTPUT_DIR ("opt_in_results-" + $stem + ".xlsx")
+}
+
+function Invoke-Split([string]$pdfPath, [string]$outputDir) {
     Write-Host ""
-    Write-Host "Waiting for job to complete (Ctrl+C to stop watching)..." -ForegroundColor Cyan
+    Write-Host "Splitting: $(Split-Path -Leaf $pdfPath)" -ForegroundColor Cyan
+    & $VENV -m pdf_extractor.cli $pdfPath --split-documents --split-output-dir $outputDir
+    return $LASTEXITCODE -eq 0
+}
+
+function Invoke-OptInExtraction([string]$splitDir, [string]$excelPath) {
+    Write-Host "Extracting opt-in data..." -ForegroundColor Cyan
+    & $VENV -c "
+from dotenv import load_dotenv
+load_dotenv(override=True)
+from pdf_extractor.opt_in_extractor import process_folder_to_excel
+import sys
+n = process_folder_to_excel('$splitDir', '$excelPath')
+print(f'Processed {n} credit application(s).')
+"
+    return $LASTEXITCODE -eq 0
+}
+
+function Invoke-AzureJob([string]$filename) {
+    Write-Host ""
+    Write-Host "Starting Azure job for: $filename" -ForegroundColor Cyan
+    
+    $execName = az containerapp job start `
+        --name $JOB_NAME `
+        --resource-group $RESOURCE_GROUP `
+        --args $filename `
+        --query name -o tsv
+    
+    Write-Host "Execution: $execName" -ForegroundColor Yellow
+    
+    # Wait for completion
+    Write-Host "Waiting for job to complete..." -ForegroundColor Cyan
+    $maxWait = 600
+    $elapsed = 0
+    
+    while ($elapsed -lt $maxWait) {
+        $status = az containerapp job execution show `
+            --name $JOB_NAME `
+            --resource-group $RESOURCE_GROUP `
+            --job-execution-name $execName `
+            --query "properties.status" -o tsv 2>$null
+        
+        if ($status -in "Succeeded", "Failed") {
+            Write-Host "Status: $status" -ForegroundColor $(if ($status -eq "Succeeded") { "Green" } else { "Red" })
+            break
+        }
+        
+        Write-Host "  Status: $status (${elapsed}s)" -ForegroundColor Yellow
+        Start-Sleep -Seconds 10
+        $elapsed += 10
+    }
+    
+    # Save logs locally
+    Write-Host "Saving logs to output/job-logs/..." -ForegroundColor Cyan
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $logFile = Join-Path $LOG_DIR "${execName}-${stamp}.log"
+    
+    az containerapp job logs show `
+        --name $JOB_NAME `
+        --resource-group $RESOURCE_GROUP `
+        --execution $execName `
+        --container $JOB_NAME 2>&1 | Out-File -FilePath $logFile -Encoding utf8
+    
+    # Append replica diagnostics
+    $replicas = az containerapp job replica list `
+        --name $JOB_NAME `
+        --resource-group $RESOURCE_GROUP `
+        --execution $execName -o json 2>$null
+    
+    Add-Content -Path $logFile -Value "`n`n===== REPLICA DIAGNOSTICS =====`n$replicas"
+    
+    Write-Host "Logs saved: $logFile" -ForegroundColor Green
+    return $status -eq "Succeeded"
+}
+
+function Show-LocalMenu {
+    Clear-Host
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host "  pdf-extractor - LOCAL MODE" -ForegroundColor Cyan
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Split PDFs on your machine (fast, no Azure needed)" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  Input:   $DATA_DIR" -ForegroundColor DarkCyan
+    Write-Host "  Output:  $OUTPUT_DIR/split-*/" -ForegroundColor DarkCyan
+    Write-Host "  Logs:    $LOG_DIR/" -ForegroundColor DarkCyan
+    Write-Host ""
+    Write-Host "  1. Process one PDF" -ForegroundColor White
+    Write-Host "  2. Process all PDFs" -ForegroundColor White
+    Write-Host "  3. View outputs" -ForegroundColor White
+    Write-Host "  4. Switch to Azure mode" -ForegroundColor White
+    Write-Host "  0. Exit" -ForegroundColor White
+    Write-Host ""
+    Write-Host "============================================================" -ForegroundColor Cyan
+}
+
+function Show-AzureMenu {
+    Clear-Host
+    $current = az containerapp job show `
+        --name $JOB_NAME `
+        --resource-group $RESOURCE_GROUP `
+        --query "properties.template.containers[0].args[0]" -o tsv 2>$null
+    
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host "  pdf-extractor - AZURE MODE" -ForegroundColor Cyan
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Submit PDF splitting jobs to Azure Container Apps" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  Input:   Azure Blob (pdfinput)" -ForegroundColor DarkCyan
+    Write-Host "  Output:  Azure Blob (pdfoutput) + Local Excel + Logs" -ForegroundColor DarkCyan
+    Write-Host "  Logs:    $LOG_DIR/" -ForegroundColor DarkCyan
+    Write-Host "  Current: $current" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  1. Run job on current file" -ForegroundColor White
+    Write-Host "  2. Pick different file and run" -ForegroundColor White
+    Write-Host "  3. Check last run status" -ForegroundColor White
+    Write-Host "  4. List output files in blob storage" -ForegroundColor White
+    Write-Host "  5. Rebuild Docker image" -ForegroundColor White
+    Write-Host "  6. View job logs" -ForegroundColor White
+    Write-Host "  7. Switch to local mode" -ForegroundColor White
+    Write-Host "  0. Exit" -ForegroundColor White
+    Write-Host ""
+    Write-Host "============================================================" -ForegroundColor Cyan
+}
+
+function Show-LocalOutputs {
+    Write-Host ""
+    Write-Host "Split folders:" -ForegroundColor Yellow
+    Get-ChildItem -Path $OUTPUT_DIR -Directory -Filter "split-*" 2>$null | ForEach-Object {
+        Write-Host "  $_"
+    }
+    
+    Write-Host ""
+    Write-Host "Excel files:" -ForegroundColor Yellow
+    Get-ChildItem -Path $OUTPUT_DIR -Filter "opt_in_results-*.xlsx" 2>$null | ForEach-Object {
+        Write-Host "  $_"
+    }
+    
+    Write-Host ""
+    Write-Host "Job logs (recent):" -ForegroundColor Yellow
+    Get-ChildItem -Path $LOG_DIR -Filter "*.log" 2>$null | Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {
+        Write-Host "  $_"
+    }
+}
+
+# ==================== Main ====================
+
+Initialize-Dirs
+
+# Mode selection
+if (-not $Mode) {
+    Clear-Host
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host "  pdf-extractor" -ForegroundColor Cyan
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  1. Local   - Split on your machine (minutes)" -ForegroundColor White
+    Write-Host "  2. Azure   - Cloud-based splitting (slower, durable)" -ForegroundColor White
+    Write-Host "  0. Exit" -ForegroundColor White
+    Write-Host ""
+    $choice = Read-Host "Choose mode"
+    
+    if ($choice -eq "1") { $Mode = "local" }
+    elseif ($choice -eq "2") { $Mode = "azure" }
+    else { Write-Host "Goodbye."; Pop-Location; exit 0 }
+}
+
+# ===== LOCAL MODE =====
+if ($Mode -eq "local") {
+    Require-LocalPrereqs
+    
+    if ($File) {
+        # Non-interactive: single file
+        $pdf = Get-LocalPdfs | Where-Object { $_.Name -eq $File } | Select-Object -First 1
+        if (-not $pdf) {
+            Write-Host "ERROR: File '$File' not found in $DATA_DIR" -ForegroundColor Red
+            Pop-Location
+            exit 1
+        }
+        $outDir = Get-OutputSplitDir $pdf.Name
+        $ok = Invoke-Split $pdf.FullName $outDir
+        if ($ok -and $OptIn) {
+            $excelPath = Get-OutputExcelFile $pdf.Name
+            Invoke-OptInExtraction $outDir $excelPath | Out-Null
+        }
+        Pop-Location
+        exit $(if ($ok) { 0 } else { 1 })
+    }
+    
+    # Interactive menu
     while ($true) {
-        $statusQuery = "[0].properties.status"
-        $status = az containerapp job execution list --name $JOB_NAME --resource-group $RESOURCE_GROUP --query $statusQuery -o tsv 2>$null
-        $nameQuery = "[0].name"
-        $execName = az containerapp job execution list --name $JOB_NAME --resource-group $RESOURCE_GROUP --query $nameQuery -o tsv 2>$null
-        Write-Host "  $execName : $status"
-        if ($status -eq "Succeeded") {
-            Write-Host ""
-            Write-Host "Job completed successfully." -ForegroundColor Green
-            break
-        } elseif ($status -eq "Failed") {
-            Write-Host ""
-            Write-Host "Job failed. Choose option 6 from the menu to view logs." -ForegroundColor Red
-            break
-        }
-        Start-Sleep -Seconds 20
-    }
-}
-
-# Welcome screen
-Clear-Host
-Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "  pdf-extractor - Azure PDF Splitting Tool" -ForegroundColor Cyan
-Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "  WHAT THIS DOES:" -ForegroundColor White
-Write-Host "  Splits multi-document PDFs (e.g. deal jackets) into one"
-Write-Host "  PDF per logical document using AI-based page detection."
-Write-Host "  Input files are read from Azure Blob Storage and split"
-Write-Host "  output files are written back to Azure Blob Storage."
-Write-Host ""
-Write-Host "  MENU OPTIONS:" -ForegroundColor White
-Write-Host "  1. Run job         - process the current input file"
-Write-Host "  2. Change and run  - pick a different PDF and process it"
-Write-Host "  3. Check status    - see if the last job succeeded or failed"
-Write-Host "  4. List outputs    - browse split PDFs in blob storage"
-Write-Host "  5. Rebuild image   - use after code changes (admin only)"
-Write-Host "  6. Show logs       - diagnose a failed run"
-Write-Host "  0. Exit"
-Write-Host ""
-Write-Host "  WHERE FILES LIVE:" -ForegroundColor White
-Write-Host "  Input PDFs  -> Azure Portal -> naderblob02 -> pdfinput"
-Write-Host "  Output PDFs -> Azure Portal -> naderblob02 -> pdfoutput"
-Write-Host "  Upload new input PDFs: Portal -> naderblob02 -> pdfinput -> Upload"
-Write-Host ""
-Write-Host "  NOTE: Azure access expires every 8 hours (PIM)." -ForegroundColor Yellow
-Write-Host "  If you get permission errors, go to Azure Portal ->" -ForegroundColor Yellow
-Write-Host "  Privileged Identity Management -> My Roles -> Activate." -ForegroundColor Yellow
-Write-Host ""
-Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host ""
-Read-Host "Press Enter to continue"
-
-# Start
-Assert-AzCli
-Assert-LoggedIn
-
-while ($true) {
-    $current = Get-CurrentTarget
-    Write-Host ""
-    Write-Host "================================================" -ForegroundColor Cyan
-    Write-Host "  pdf-extractor - Azure Operations" -ForegroundColor Cyan
-    Write-Host "================================================" -ForegroundColor Cyan
-    Write-Host "  Current target file: $current" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  1. Run job on current file ($current)"
-    Write-Host "  2. Change target file then run"
-    Write-Host "  3. Check status of last run"
-    Write-Host "  4. List output files in blob storage"
-    Write-Host "  5. Rebuild Docker image (after code changes)"
-    Write-Host "  6. Show logs from last run"
-    Write-Host "  0. Exit"
-    Write-Host ""
-
-    $choice = Read-Host "Enter choice"
-
-    switch ($choice) {
-
-        "1" {
-            Write-Host ""
-            Write-Host "Starting job for $current ..." -ForegroundColor Cyan
-            az containerapp job start --name $JOB_NAME --resource-group $RESOURCE_GROUP | Out-Null
-            Write-Host "Job started. First run takes 3-5 min (model download). Subsequent runs ~1-2 min."
-            Wait-ForJob
-        }
-
-        "2" {
-            Write-Host ""
-            Write-Host "Files available in $INPUT_CONTAINER :" -ForegroundColor Cyan
-            az storage blob list --account-name $STORAGE_ACCOUNT --container-name $INPUT_CONTAINER --query "[].name" -o tsv --auth-mode key
-            Write-Host ""
-            $newFile = Read-Host "Enter blob name to process (e.g. Sample-2.pdf)"
-            if ($newFile) {
-                az containerapp job update --name $JOB_NAME --resource-group $RESOURCE_GROUP --args $newFile | Out-Null
-                Write-Host "Target updated to $newFile. Starting job..." -ForegroundColor Cyan
-                az containerapp job start --name $JOB_NAME --resource-group $RESOURCE_GROUP | Out-Null
-                Wait-ForJob
+        Show-LocalMenu
+        $choice = Read-Host "Enter choice"
+        
+        switch ($choice) {
+            "1" {
+                $pdfs = Get-LocalPdfs
+                if ($pdfs.Count -eq 0) {
+                    Write-Host "No PDFs found in $DATA_DIR" -ForegroundColor Yellow
+                    continue
+                }
+                
+                Write-Host ""
+                for ($i = 0; $i -lt $pdfs.Count; $i++) {
+                    Write-Host "  $($i+1). $($pdfs[$i].Name)"
+                }
+                
+                $idx = Read-Host "Select PDF (number)"
+                if ($idx -match "^\d+$" -and [int]$idx -ge 1 -and [int]$idx -le $pdfs.Count) {
+                    $pdf = $pdfs[[int]$idx - 1]
+                    $outDir = Get-OutputSplitDir $pdf.Name
+                    $ok = Invoke-Split $pdf.FullName $outDir
+                    
+                    if ($ok) {
+                        $resp = Read-Host "Extract opt-in data to Excel? (y/n)"
+                        if ($resp -eq "y") {
+                            $excelPath = Get-OutputExcelFile $pdf.Name
+                            Invoke-OptInExtraction $outDir $excelPath | Out-Null
+                        }
+                    }
+                }
+                Read-Host "Press Enter to continue"
+            }
+            
+            "2" {
+                $pdfs = Get-LocalPdfs
+                if ($pdfs.Count -eq 0) {
+                    Write-Host "No PDFs found." -ForegroundColor Yellow
+                    continue
+                }
+                
+                $resp = Read-Host "Include opt-in extraction? (y/n)"
+                $withOpt = $resp -eq "y"
+                
+                foreach ($pdf in $pdfs) {
+                    $outDir = Get-OutputSplitDir $pdf.Name
+                    $ok = Invoke-Split $pdf.FullName $outDir
+                    if ($ok -and $withOpt) {
+                        $excelPath = Get-OutputExcelFile $pdf.Name
+                        Invoke-OptInExtraction $outDir $excelPath | Out-Null
+                    }
+                }
+                Read-Host "Press Enter to continue"
+            }
+            
+            "3" {
+                Show-LocalOutputs
+                Read-Host "Press Enter to continue"
+            }
+            
+            "4" {
+                $Mode = "azure"
+                break
+            }
+            
+            "0" {
+                Write-Host "Goodbye." -ForegroundColor Cyan
+                Pop-Location
+                exit 0
+            }
+            
+            default {
+                Write-Host "Invalid choice (0-4)." -ForegroundColor Red
+                Read-Host "Press Enter to continue"
             }
         }
+    }
+}
 
-        "3" {
-            Write-Host ""
-            Write-Host "Last execution status:" -ForegroundColor Cyan
-            $q = "[0].name"
-            $execName = az containerapp job execution list --name $JOB_NAME --resource-group $RESOURCE_GROUP --query $q -o tsv
-            $q2 = "[0].properties.status"
-            $execStatus = az containerapp job execution list --name $JOB_NAME --resource-group $RESOURCE_GROUP --query $q2 -o tsv
-            $q3 = "[0].properties.startTime"
-            $execStart = az containerapp job execution list --name $JOB_NAME --resource-group $RESOURCE_GROUP --query $q3 -o tsv
-            Write-Host "  Name    : $execName"
-            Write-Host "  Status  : $execStatus"
-            Write-Host "  Started : $execStart"
-        }
-
-        "4" {
-            Write-Host ""
-            Write-Host "Output files in $OUTPUT_CONTAINER :" -ForegroundColor Cyan
-            az storage blob list --account-name $STORAGE_ACCOUNT --container-name $OUTPUT_CONTAINER --query "[].name" -o tsv --auth-mode key
-        }
-
-        "5" {
-            Write-Host ""
-            $repoPath = Read-Host "Enter path to pdfExtractor folder (or press Enter for current directory)"
-            if ($repoPath) { Set-Location $repoPath }
-            Write-Host "Building image... this takes ~3 minutes." -ForegroundColor Cyan
-            az acr build --registry $ACR_NAME --resource-group $RESOURCE_GROUP --image pdf-extractor:latest .
-        }
-
-        "6" {
-            Write-Host ""
-            $q = "[0].name"
-            $execName = az containerapp job execution list --name $JOB_NAME --resource-group $RESOURCE_GROUP --query $q -o tsv
-            Write-Host "Fetching logs for $execName ..." -ForegroundColor Cyan
-            az containerapp job logs show --name $JOB_NAME --resource-group $RESOURCE_GROUP --execution $execName --container $JOB_NAME --tail 100
-        }
-
-        "0" {
-            Write-Host "Goodbye." -ForegroundColor Cyan
-            exit 0
-        }
-
-        default {
-            Write-Host "Invalid choice. Please enter 0-6." -ForegroundColor Red
+# ===== AZURE MODE =====
+if ($Mode -eq "azure") {
+    Require-AzureCli
+    Require-AzureAuth
+    
+    while ($true) {
+        Show-AzureMenu
+        $choice = Read-Host "Enter choice"
+        
+        switch ($choice) {
+            "1" {
+                $current = az containerapp job show `
+                    --name $JOB_NAME `
+                    --resource-group $RESOURCE_GROUP `
+                    --query "properties.template.containers[0].args[0]" -o tsv 2>$null
+                Invoke-AzureJob $current | Out-Null
+                Read-Host "Press Enter to continue"
+            }
+            
+            "2" {
+                Write-Host ""
+                az storage blob list `
+                    --account-name $STORAGE_ACCOUNT `
+                    --container-name $INPUT_CONTAINER `
+                    --query "[].name" -o tsv --auth-mode key 2>$null
+                
+                $newFile = Read-Host "`nEnter blob name to process"
+                if ($newFile) {
+                    az containerapp job update `
+                        --name $JOB_NAME `
+                        --resource-group $RESOURCE_GROUP `
+                        --args $newFile | Out-Null
+                    Invoke-AzureJob $newFile | Out-Null
+                }
+                Read-Host "Press Enter to continue"
+            }
+            
+            "3" {
+                Write-Host ""
+                $q1 = "[0].name"
+                $execName = az containerapp job execution list `
+                    --name $JOB_NAME `
+                    --resource-group $RESOURCE_GROUP `
+                    --query $q1 -o tsv 2>$null
+                
+                $q2 = "[0].properties.status"
+                $status = az containerapp job execution list `
+                    --name $JOB_NAME `
+                    --resource-group $RESOURCE_GROUP `
+                    --query $q2 -o tsv 2>$null
+                
+                Write-Host "Last execution: $execName" -ForegroundColor Yellow
+                Write-Host "Status: $status" -ForegroundColor $(if ($status -eq "Succeeded") { "Green" } else { "Red" })
+                Read-Host "Press Enter to continue"
+            }
+            
+            "4" {
+                Write-Host ""
+                az storage blob list `
+                    --account-name $STORAGE_ACCOUNT `
+                    --container-name $OUTPUT_CONTAINER `
+                    --query "[].name" -o tsv --auth-mode key 2>$null
+                Read-Host "Press Enter to continue"
+            }
+            
+            "5" {
+                Write-Host ""
+                Write-Host "Building Docker image... (3-5 min)" -ForegroundColor Cyan
+                az acr build --registry $ACR_NAME --image pdf-extractor:latest .
+                Read-Host "Press Enter to continue"
+            }
+            
+            "6" {
+                Write-Host ""
+                $q = "[0].name"
+                $execName = az containerapp job execution list `
+                    --name $JOB_NAME `
+                    --resource-group $RESOURCE_GROUP `
+                    --query $q -o tsv 2>$null
+                
+                if ($execName) {
+                    Write-Host "Latest execution: $execName`n" -ForegroundColor Yellow
+                    az containerapp job logs show `
+                        --name $JOB_NAME `
+                        --resource-group $RESOURCE_GROUP `
+                        --execution $execName `
+                        --container $JOB_NAME `
+                        --tail 50 2>$null
+                } else {
+                    Write-Host "No executions found." -ForegroundColor Yellow
+                }
+                Read-Host "Press Enter to continue"
+            }
+            
+            "7" {
+                $Mode = "local"
+                break
+            }
+            
+            "0" {
+                Write-Host "Goodbye." -ForegroundColor Cyan
+                Pop-Location
+                exit 0
+            }
+            
+            default {
+                Write-Host "Invalid choice (0-7)." -ForegroundColor Red
+                Read-Host "Press Enter to continue"
+            }
         }
     }
 }
+
+Pop-Location
