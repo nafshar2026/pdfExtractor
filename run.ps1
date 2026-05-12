@@ -22,6 +22,18 @@
 #            Input:  Azure Blob Storage (pdfinput container)
 #            Output: Azure Blob Storage (pdfoutput container) + local Excel
 #
+# LOCAL MODE MENU OPTIONS:
+#   1. Process one PDF           - Select and split a single file by number
+#   2. Process all PDFs          - Split all files in src/pdf_extractor/Data/
+#   3. Process by pattern        - Selective processing with wildcards
+#      Examples:
+#        6*           → All files starting with "6" (600156961.pdf, 600157748.pdf)
+#        Sample-*     → All files starting with "Sample-" (Sample-1.pdf, etc.)
+#        RouteOne*    → All files matching pattern (RouteOne.pdf)
+#      (Optionally include opt-in extraction to Excel)
+#   4. View outputs              - Show split folders, Excel files, recent logs
+#   5. Switch to Azure mode      - Change to cloud-based splitting
+#
 # SETUP (ONE-TIME):
 #   Local mode:
 #     py -3.11 -m venv .venv
@@ -31,6 +43,16 @@
 #     Download Azure CLI: https://aka.ms/installazurecliwindows
 #     Ensure you have Contributor access to nader-test-rag resource group
 #     (Ask project owner to add you via Azure Portal IAM)
+#
+# COMMAND-LINE USAGE (NON-INTERACTIVE):
+#   Single file with opt-in extraction:
+#     .\run.ps1 -Mode local -File Sample-1.pdf -OptIn
+#
+#   Single file without extraction:
+#     .\run.ps1 -Mode local -File Sample-1.pdf
+#
+#   Force Azure mode (default via menu selection):
+#     .\run.ps1 -Mode azure
 #
 # ===========================================================================
 
