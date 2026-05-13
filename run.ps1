@@ -637,8 +637,15 @@ if ($Mode -eq "local") {
             }
             
             "6" {
-                $Mode = "azure"
-                break
+                if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+                    Write-Host ""
+                    Write-Host "ERROR: Azure CLI not found. Cannot switch to Azure mode." -ForegroundColor Red
+                    Write-Host "Download from: https://aka.ms/installazurecliwindows" -ForegroundColor Yellow
+                    Read-Host "Press Enter to continue"
+                } else {
+                    $Mode = "azure"
+                    break
+                }
             }
             
             "0" {
