@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import tempfile
@@ -41,7 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
         "input_path",
         help=(
             "PDF file, directory of PDFs, or (with --azure) a blob name in the "
-            "Azure input container.  Pass '*' with --azure to process all blobs."
+            "Azure input container. With --azure you may also pass glob patterns "
+            "such as '6*' or 'abc*'."
         ),
     )
     parser.add_argument(
@@ -229,12 +231,24 @@ def main() -> int:
         if not args.split_documents:
             parser.error("--azure currently requires --split-documents.")
         from .azure_storage import list_input_blobs
-        if args.input_path == "*":
+
+        pattern = args.input_path
+        has_glob = any(ch in pattern for ch in "*?[]")
+
+        if pattern == "*":
             blob_names = list_input_blobs()
             if not blob_names:
                 parser.error("No PDF blobs found in the input container.")
+        elif has_glob:
+            all_blobs = list_input_blobs()
+            blob_names = [
+                name for name in all_blobs
+                if fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(Path(name).name, pattern)
+            ]
+            if not blob_names:
+                parser.error(f"No PDF blobs matched Azure pattern: {pattern}")
         else:
-            blob_names = [args.input_path]
+            blob_names = [pattern]
         all_opt_in: list[dict] = []
         for blob_name in blob_names:
             all_opt_in.extend(_run_azure_split(blob_name, verbose=args.verbose))

@@ -139,6 +139,25 @@ split_pdf()
 The grouping logic and the boundary signals are **identical for text and image pages**.
 Only the extraction method differs.
 
+### Large-file reliability on constrained hardware
+
+To make large scanned PDFs reliable on small Azure job SKUs, OCR execution is now
+configurable via environment variables in `image_splitter.py`:
+
+- `PDF_EXTRACTOR_OCR_ISOLATED=1`: runs PaddleOCR in an isolated subprocess
+- `PDF_EXTRACTOR_OCR_RECYCLE_CALLS=6`: recycles worker to bound memory growth
+- `PDF_EXTRACTOR_OCR_POOL_RETRIES=2`: retries after worker crash/OOM
+- `PDF_EXTRACTOR_OCR_MAX_WIDTH=1200`: caps render width before OCR
+
+This profile was validated against previously problematic large files (`600157742.pdf`,
+`600157748.pdf`) and in wildcard batch execution.
+
+### Azure wildcard input support
+
+With `--azure`, the CLI now supports glob patterns in `input_path` (for example
+`6*`, `abc*`, `*`). A single execution processes all matched blobs and writes one
+consolidated opt-in Excel for the full batch.
+
 ### PageSignal
 
 Every page produces one `PageSignal(classification, title_text, page_num_in_doc,

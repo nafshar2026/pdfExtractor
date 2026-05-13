@@ -5,7 +5,11 @@ from __future__ import annotations
 import gc
 import io
 import logging
+import multiprocessing
+import os
 import re
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -40,8 +44,9 @@ _BOTTOM_STRIP_FRACTION = 0.15
 # Maximum width (pixels) for images passed to PaddleOCR.  High-resolution scans
 # (600 DPI letter page = 5100 px wide) are downscaled to this before OCR so that
 # PaddlePaddle's inference buffers stay within the container memory limit.
-# 1500 px gives ~150 DPI equivalent — more than sufficient for text recognition.
-_OCR_MAX_WIDTH = 1500
+# Default 1500 px gives ~150 DPI equivalent — more than sufficient for text
+# recognition on standard forms.
+_OCR_MAX_WIDTH_DEFAULT = 1500
 
 # A page with at least this many extracted characters is treated as a digital text page;
 # fewer characters means the page is blank or image-only and falls back to OCR.
@@ -79,6 +84,39 @@ def _infer_content_title(text: str) -> str | None:
 
 # Module-level singleton; avoids reloading the ~200 MB PaddleOCR model on every page.
 _ocr_instance: PaddleOCR | None = None
+_ocr_pool: ProcessPoolExecutor | None = None
+_ocr_pool_calls = 0
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+# When enabled, OCR runs in a dedicated subprocess so memory can be reclaimed by
+# recycling the worker process instead of accumulating in the main process.
+_OCR_ISOLATED = _env_flag("PDF_EXTRACTOR_OCR_ISOLATED", default=False)
+
+# Number of OCR calls before recycling the isolated worker. 0 disables recycle.
+_OCR_RECYCLE_CALLS = max(0, _env_int("PDF_EXTRACTOR_OCR_RECYCLE_CALLS", 40))
+
+# Retry count when the isolated worker dies mid-inference.
+_OCR_POOL_RETRIES = max(0, _env_int("PDF_EXTRACTOR_OCR_POOL_RETRIES", 1))
+
+# Optional global cap for rendered OCR width to trade speed/accuracy for memory.
+_OCR_MAX_WIDTH = max(400, _env_int("PDF_EXTRACTOR_OCR_MAX_WIDTH", _OCR_MAX_WIDTH_DEFAULT))
 
 
 def _get_ocr() -> PaddleOCR:
@@ -92,6 +130,62 @@ def _get_ocr() -> PaddleOCR:
     if _ocr_instance is None:
         _ocr_instance = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
     return _ocr_instance
+
+
+_worker_ocr_instance = None
+
+
+def _worker_run_ocr(image_array: np.ndarray):
+    """Run OCR in worker process with a process-local PaddleOCR singleton."""
+    global _worker_ocr_instance
+    if _worker_ocr_instance is None:
+        _worker_ocr_instance = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
+    return _worker_ocr_instance.ocr(image_array)
+
+
+def _get_ocr_pool() -> ProcessPoolExecutor:
+    global _ocr_pool
+    if _ocr_pool is None:
+        # Use spawn so worker memory is isolated from parent state across platforms.
+        mp_ctx = multiprocessing.get_context("spawn")
+        _ocr_pool = ProcessPoolExecutor(max_workers=1, mp_context=mp_ctx)
+    return _ocr_pool
+
+
+def _shutdown_ocr_pool() -> None:
+    global _ocr_pool, _ocr_pool_calls
+    if _ocr_pool is not None:
+        _ocr_pool.shutdown(wait=True, cancel_futures=False)
+        _ocr_pool = None
+    _ocr_pool_calls = 0
+
+
+def _ocr_infer(image_array: np.ndarray):
+    """Run OCR either in-process or in an isolated subprocess worker."""
+    global _ocr_pool_calls
+
+    if not _OCR_ISOLATED:
+        return _get_ocr().ocr(image_array)
+
+    # Ensure stable pickling/transfer to worker process.
+    arr = np.ascontiguousarray(image_array)
+
+    attempts = _OCR_POOL_RETRIES + 1
+    for attempt in range(attempts):
+        try:
+            pool = _get_ocr_pool()
+            result = pool.submit(_worker_run_ocr, arr).result()
+            _ocr_pool_calls += 1
+
+            if _OCR_RECYCLE_CALLS > 0 and _ocr_pool_calls >= _OCR_RECYCLE_CALLS:
+                _shutdown_ocr_pool()
+
+            return result
+        except BrokenProcessPool:
+            # Worker died (commonly OOM). Recreate pool and retry a bounded number of times.
+            _shutdown_ocr_pool()
+            if attempt >= attempts - 1:
+                raise
 
 
 @dataclass(slots=True)
@@ -437,7 +531,6 @@ def _analyze_image_page(fitz_doc, page_idx: int) -> PageSignal:
     if pil_image is None:
         return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)
 
-    ocr = _get_ocr()
     width, height = pil_image.size
     if width == 0 or height == 0:
         del pil_image
@@ -447,7 +540,7 @@ def _analyze_image_page(fitz_doc, page_idx: int) -> PageSignal:
     bottom_strip = pil_image.crop((0, int(height * (1 - _BOTTOM_STRIP_FRACTION)), width, height))
     bottom_arr = np.array(bottom_strip)
     del bottom_strip
-    bottom_result = ocr.ocr(bottom_arr)
+    bottom_result = _ocr_infer(bottom_arr)
     del bottom_arr
     bottom_texts = _extract_ocr_texts(bottom_result)
 
@@ -472,7 +565,7 @@ def _analyze_image_page(fitz_doc, page_idx: int) -> PageSignal:
     top_strip = pil_image.crop((0, 0, width, int(height * _TOP_STRIP_FRACTION)))
     top_arr = np.array(top_strip)
     del top_strip, pil_image  # full image no longer needed
-    top_result = ocr.ocr(top_arr)
+    top_result = _ocr_infer(top_arr)
     del top_arr
     top_texts = _extract_ocr_texts(top_result)
 
@@ -739,13 +832,15 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path, *, verbose: bool = F
     signals_list: list[tuple[int, PageSignal]] = []
     signals_dict: dict[int, PageSignal] = {}
 
-    for i in range(len(reader.pages)):
-        signal = analyze_page(reader.pages[i], fitz_doc=fitz_doc, page_idx=i)
-        signals_list.append((i, signal))
-        signals_dict[i] = signal
-        gc.collect()  # release OCR buffers from the processed page
-
-    fitz_doc.close()
+    try:
+        for i in range(len(reader.pages)):
+            signal = analyze_page(reader.pages[i], fitz_doc=fitz_doc, page_idx=i)
+            signals_list.append((i, signal))
+            signals_dict[i] = signal
+            gc.collect()  # release OCR buffers from the processed page
+    finally:
+        fitz_doc.close()
+        _shutdown_ocr_pool()
 
     if verbose:
         print(f"\n{'Page':>5}  {'Classification':<15}  {'PgNum':>5}  {'Total':>5}  Title")

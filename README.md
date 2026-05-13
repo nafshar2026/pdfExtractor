@@ -26,6 +26,28 @@ document markers, or a prominent title — and the results are grouped into docu
 runs before writing output files. The same logic handles both digital text pages
 and scanned image pages; only the extraction method differs.
 
+### Large-file hardening (smallest hardware objective)
+
+To reliably process large scanned PDFs on constrained Azure job hardware, OCR now
+supports process isolation, worker recycling, bounded retries, and a configurable
+render-width cap.
+
+Available controls:
+- `PDF_EXTRACTOR_OCR_ISOLATED=1`: run OCR in a dedicated subprocess
+- `PDF_EXTRACTOR_OCR_RECYCLE_CALLS=<N>`: recycle OCR worker every N OCR calls
+- `PDF_EXTRACTOR_OCR_POOL_RETRIES=<N>`: retry when OCR worker dies (for example OOM)
+- `PDF_EXTRACTOR_OCR_MAX_WIDTH=<pixels>`: downscale rendered page width before OCR
+
+Recommended production profile for large files:
+- `PDF_EXTRACTOR_OCR_ISOLATED=1`
+- `PDF_EXTRACTOR_OCR_RECYCLE_CALLS=6`
+- `PDF_EXTRACTOR_OCR_POOL_RETRIES=2`
+- `PDF_EXTRACTOR_OCR_MAX_WIDTH=1200`
+
+Validated outcomes:
+- 600157742.pdf and 600157748.pdf complete successfully in Azure with the hardened profile.
+- Wildcard batch processing (for example `6*`) can process multiple large files in one run and produce one consolidated Excel output.
+
 ---
 
 ## Running the Tool
@@ -94,6 +116,20 @@ All modes produce:
 # Split a local PDF
 .venv\Scripts\python -m pdf_extractor.cli src/pdf_extractor/Data/Sample-1.pdf \
   --split-documents --split-output-dir output/split-sample
+
+# Optional: isolate OCR in a worker process (helps large scanned PDFs)
+$env:PDF_EXTRACTOR_OCR_ISOLATED = "1"
+# Recycle OCR worker every N OCR calls (two calls per scanned page)
+$env:PDF_EXTRACTOR_OCR_RECYCLE_CALLS = "6"
+# Retry if the isolated worker crashes
+$env:PDF_EXTRACTOR_OCR_POOL_RETRIES = "2"
+# Cap OCR render width (lower memory use for very large scans)
+$env:PDF_EXTRACTOR_OCR_MAX_WIDTH = "1200"
+.venv\Scripts\python -m pdf_extractor.cli src/pdf_extractor/Data/Sample-1.pdf \
+  --split-documents --split-output-dir output/split-sample
+
+# Azure wildcard batch (single run, single consolidated Excel)
+.venv\Scripts\python -m pdf_extractor.cli "6*" --azure --split-documents
 
 # Extract opt-in data to Excel
 .venv\Scripts\python -c \

@@ -257,6 +257,33 @@ def test_analyze_page_continuation_detected():
     assert sig.page_num_in_doc == 3
     assert sig.title_text is None
 
+---
+
+## Addendum (2026-05-13): Completed production hardening track
+
+### Objective achieved
+
+Large scanned PDFs are now processable on constrained Azure hardware through OCR memory hardening and retry behavior.
+
+### Completed changes
+
+- Added isolated OCR subprocess mode
+- Added configurable worker recycle count
+- Added retry on broken OCR worker pool
+- Added configurable OCR render width cap
+- Added Azure glob input support (`*`, `6*`, `abc*`, `?`, `[]`)
+
+### Verified runs
+
+- Single large-file success: `600157742.pdf`
+- Single large-file success: `600157748.pdf`
+- Batch wildcard success: `6*` matched 4 files and produced one consolidated Excel
+
+### Current known gap
+
+- Duplicate document outputs within a file are still emitted with suffixes (`(2)`, `(3)`, etc.).
+- Next step remains hash-based deduplication after split grouping.
+
 
 def test_analyze_page_title_detected():
     page = _make_image_page(_blank_image())

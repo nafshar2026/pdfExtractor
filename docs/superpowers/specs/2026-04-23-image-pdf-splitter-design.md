@@ -137,3 +137,34 @@ Added to `pyproject.toml` under `[project.dependencies]`:
 - Integration test `split_pdf` against `Sample.pdf`, asserting the known first 12 pages produce the same 7 files as the existing splitter.
 - Test fallback naming (`pages_{start}-{end}.pdf`) for pages with no detected title.
 - Test that `CONTINUATION` override suppresses a title on a mid-document page.
+
+---
+
+## Addendum (2026-05-13): Large-file + low-hardware hardening
+
+### Objective
+
+Run large scanned deal-jacket PDFs reliably on the smallest practical container hardware.
+
+### Implemented hardening controls
+
+- Isolated OCR worker process (`PDF_EXTRACTOR_OCR_ISOLATED=1`)
+- Worker recycling (`PDF_EXTRACTOR_OCR_RECYCLE_CALLS`)
+- Worker crash retry (`PDF_EXTRACTOR_OCR_POOL_RETRIES`)
+- Render width cap before OCR (`PDF_EXTRACTOR_OCR_MAX_WIDTH`)
+
+### Validated production profile
+
+- `PDF_EXTRACTOR_OCR_ISOLATED=1`
+- `PDF_EXTRACTOR_OCR_RECYCLE_CALLS=6`
+- `PDF_EXTRACTOR_OCR_POOL_RETRIES=2`
+- `PDF_EXTRACTOR_OCR_MAX_WIDTH=1200`
+
+### Results
+
+- Large files `600157742.pdf` and `600157748.pdf` completed successfully.
+- Wildcard Azure batch (`6*`) completed with one combined Excel and split outputs for all matched inputs.
+
+### CLI enhancement
+
+Azure mode now supports glob patterns in `input_path` (`*`, `6*`, `abc*`, `?`, `[]`) and processes matched blobs in one run.
