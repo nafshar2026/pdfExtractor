@@ -79,6 +79,8 @@ py -3.11 -m venv .venv
 - **2 (Azure)**: Submit jobs to Azure Container Apps
   - Input: Azure Blob Storage (`pdfinput` container)
   - Output: Azure Blob Storage (`pdfoutput` container) + local Excel + logs
+  - Note: Azure jobs run inside the container and cannot read your machine's local input/output folders.
+    In Azure mode, users must upload inputs to `pdfinput` and read outputs from `pdfoutput`.
 
 Both modes support optional opt-in extraction (generates Excel with credit app data).
 
@@ -105,6 +107,11 @@ All modes produce:
 .\run.ps1 -Mode azure
 # Follow prompts to start a job
 ```
+
+Azure mode path behavior:
+- Local folders are not mounted into the Azure Container Apps job.
+- Input files must be provided as blob names/patterns in the `pdfinput` container.
+- Outputs are written by the container to the `pdfoutput` container.
 
 ### Legacy launcher (still supported)
 ```powershell

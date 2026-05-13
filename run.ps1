@@ -21,6 +21,7 @@
 #   AZURE  - Cloud-based splitting (via Container Apps)
 #            Input:  Azure Blob Storage (pdfinput container)
 #            Output: Azure Blob Storage (pdfoutput container) + local Excel
+#            Note:   Azure jobs cannot access your local folders; use blob input/output.
 #
 # LOCAL MODE MENU OPTIONS:
 #   1. Process one PDF           - Select and split a single file by number
@@ -140,10 +141,13 @@ function Show-Help {
     Write-Host "    6 = View job logs" -ForegroundColor DarkCyan
     Write-Host ""
     Write-Host "INPUT/OUTPUT:" -ForegroundColor Yellow
-    Write-Host "  Input PDFs:     src/pdf_extractor/Data/" -ForegroundColor DarkCyan
-    Write-Host "  Split output:   output/split-<filename>/" -ForegroundColor DarkCyan
-    Write-Host "  Excel results:  output/opt_in_results-<filename>.xlsx" -ForegroundColor DarkCyan
-    Write-Host "  Job logs:       output/job-logs/<execution>-<timestamp>.log" -ForegroundColor DarkCyan
+    Write-Host "  Local mode input:        src/pdf_extractor/Data/" -ForegroundColor DarkCyan
+    Write-Host "  Local mode split output: output/split-<filename>/" -ForegroundColor DarkCyan
+    Write-Host "  Local mode Excel output: output/opt_in_results-<filename>.xlsx" -ForegroundColor DarkCyan
+    Write-Host "  Azure mode input:        Azure Blob container 'pdfinput'" -ForegroundColor DarkCyan
+    Write-Host "  Azure mode output:       Azure Blob container 'pdfoutput'" -ForegroundColor DarkCyan
+    Write-Host "  Azure note:              container jobs cannot access your local folders" -ForegroundColor DarkCyan
+    Write-Host "  Job logs (saved local):  output/job-logs/<execution>-<timestamp>.log" -ForegroundColor DarkCyan
     Write-Host ""
     Write-Host "SETUP (ONE-TIME):" -ForegroundColor Yellow
     Write-Host "  Local mode:" -ForegroundColor DarkCyan
