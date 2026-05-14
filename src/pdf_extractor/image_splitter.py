@@ -1074,11 +1074,24 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path, *, verbose: bool = F
 
     seen_hashes = set()
     deduped_groups = []
-    for group in groups:
+    hash_to_groups = {}
+    for i, group in enumerate(groups):
         h = group_hash(group)
+        if h not in hash_to_groups:
+            hash_to_groups[h] = []
+        hash_to_groups[h].append((i, group))
         if h not in seen_hashes:
             deduped_groups.append(group)
             seen_hashes.add(h)
+    
+    if verbose:
+        print(f"\n--- DEDUPLICATION REPORT ---")
+        print(f"Groups before dedup: {len(groups)}")
+        print(f"Groups after dedup: {len(deduped_groups)}")
+        print(f"Unique hashes: {len(seen_hashes)}")
+        for h, group_list in sorted(hash_to_groups.items(), key=lambda x: -len(x[1])):
+            if len(group_list) > 1:
+                print(f"  DUPLICATE {h[:8]}... appears {len(group_list)} times: groups {[g[0] for g in group_list]}")
 
     written: list[Path] = []
     used_names: dict[str, int] = {}
