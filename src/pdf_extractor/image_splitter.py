@@ -5,18 +5,15 @@ from __future__ import annotations
 import gc
 import io
 import logging
-import multiprocessing
 import os
 import re
-from concurrent.futures import ProcessPoolExecutor
-from concurrent.futures.process import BrokenProcessPool
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
 from PIL import Image
-from paddleocr import PaddleOCR
 from pypdf import PdfReader, PdfWriter
 
 # Suppress noisy per-call warnings from PaddleOCR's internal logger.
@@ -27,6 +24,16 @@ from .extractor import (
     _extract_title,
     _page_lines,
     _sanitize_filename,
+)
+from .ocr_runtime import OcrRuntime
+from .overlap_splitter import (
+    analyze_chunk_file_signals,
+    chunk_document_groups,
+    fixed_page_chunks,
+    iter_windowed_groups_from_chunk_files,
+    windowed_groups_from_chunk_files,
+    windowed_groups_from_signals,
+    write_fixed_chunk_files,
 )
 
 # Matches "Page 3 of 6" in any page type — used to identify continuations and first pages.
@@ -101,12 +108,6 @@ def _infer_content_title(text: str) -> str | None:
         return "Credit Application"
     return None
 
-# Module-level singleton; avoids reloading the ~200 MB PaddleOCR model on every page.
-_ocr_instance: PaddleOCR | None = None
-_ocr_pool: ProcessPoolExecutor | None = None
-_ocr_pool_calls = 0
-
-
 def _env_flag(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -129,7 +130,8 @@ def _env_int(name: str, default: int) -> int:
 _OCR_ISOLATED = _env_flag("PDF_EXTRACTOR_OCR_ISOLATED", default=False)
 
 # Number of OCR calls before recycling the isolated worker. 0 disables recycle.
-_OCR_RECYCLE_CALLS = max(0, _env_int("PDF_EXTRACTOR_OCR_RECYCLE_CALLS", 40))
+# Keep this conservative by default for memory-constrained jobs.
+_OCR_RECYCLE_CALLS = max(0, _env_int("PDF_EXTRACTOR_OCR_RECYCLE_CALLS", 6))
 
 # Retry count when the isolated worker dies mid-inference.
 _OCR_POOL_RETRIES = max(0, _env_int("PDF_EXTRACTOR_OCR_POOL_RETRIES", 1))
@@ -137,74 +139,35 @@ _OCR_POOL_RETRIES = max(0, _env_int("PDF_EXTRACTOR_OCR_POOL_RETRIES", 1))
 # Optional global cap for rendered OCR width to trade speed/accuracy for memory.
 _OCR_MAX_WIDTH = max(400, _env_int("PDF_EXTRACTOR_OCR_MAX_WIDTH", _OCR_MAX_WIDTH_DEFAULT))
 
+# Optional chunk size (in source pages) for post-group processing.
+# Chunking is applied only between already-detected document groups, so it never
+# splits a detected document into detached pieces.
+_CHUNK_MAX_PAGES = max(0, _env_int("PDF_EXTRACTOR_CHUNK_MAX_PAGES", 0))
 
-def _get_ocr() -> PaddleOCR:
-    """Return the process-wide PaddleOCR singleton, initialising it on first call.
-
-    Angle classification is disabled because deal-jacket pages are always upright.
-    Initialisation takes several seconds and loads ~200 MB of model weights, so the
-    instance is created once and reused for every subsequent page in the same run.
-    """
-    global _ocr_instance
-    if _ocr_instance is None:
-        _ocr_instance = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
-    return _ocr_instance
-
-
-_worker_ocr_instance = None
+# Optional fixed chunk size (in source pages) for overlap-window grouping.
+# When enabled, groups are produced from sliding two-chunk windows:
+#   (chunk1+chunk2), (chunk2+chunk3), ...
+# and only groups whose first page belongs to the left chunk are emitted,
+# except the final window which emits all remaining groups. This keeps
+# boundary-spanning documents together without loading the whole document graph
+# at once.
+_OVERLAP_CHUNK_PAGES = max(0, _env_int("PDF_EXTRACTOR_OVERLAP_CHUNK_PAGES", 0))
 
 
-def _worker_run_ocr(image_array: np.ndarray):
-    """Run OCR in worker process with a process-local PaddleOCR singleton."""
-    global _worker_ocr_instance
-    if _worker_ocr_instance is None:
-        _worker_ocr_instance = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
-    return _worker_ocr_instance.ocr(image_array)
-
-
-def _get_ocr_pool() -> ProcessPoolExecutor:
-    global _ocr_pool
-    if _ocr_pool is None:
-        # Use spawn so worker memory is isolated from parent state across platforms.
-        mp_ctx = multiprocessing.get_context("spawn")
-        _ocr_pool = ProcessPoolExecutor(max_workers=1, mp_context=mp_ctx)
-    return _ocr_pool
+_OCR_RUNTIME = OcrRuntime(
+    isolated=_OCR_ISOLATED,
+    recycle_calls=_OCR_RECYCLE_CALLS,
+    pool_retries=_OCR_POOL_RETRIES,
+)
 
 
 def _shutdown_ocr_pool() -> None:
-    global _ocr_pool, _ocr_pool_calls
-    if _ocr_pool is not None:
-        _ocr_pool.shutdown(wait=True, cancel_futures=False)
-        _ocr_pool = None
-    _ocr_pool_calls = 0
+    _OCR_RUNTIME.shutdown()
 
 
 def _ocr_infer(image_array: np.ndarray):
-    """Run OCR either in-process or in an isolated subprocess worker."""
-    global _ocr_pool_calls
-
-    if not _OCR_ISOLATED:
-        return _get_ocr().ocr(image_array)
-
-    # Ensure stable pickling/transfer to worker process.
-    arr = np.ascontiguousarray(image_array)
-
-    attempts = _OCR_POOL_RETRIES + 1
-    for attempt in range(attempts):
-        try:
-            pool = _get_ocr_pool()
-            result = pool.submit(_worker_run_ocr, arr).result()
-            _ocr_pool_calls += 1
-
-            if _OCR_RECYCLE_CALLS > 0 and _ocr_pool_calls >= _OCR_RECYCLE_CALLS:
-                _shutdown_ocr_pool()
-
-            return result
-        except BrokenProcessPool:
-            # Worker died (commonly OOM). Recreate pool and retry a bounded number of times.
-            _shutdown_ocr_pool()
-            if attempt >= attempts - 1:
-                raise
+    """Run OCR via the shared runtime manager."""
+    return _OCR_RUNTIME.infer(image_array)
 
 
 @dataclass(slots=True)
@@ -1256,7 +1219,76 @@ def _group_declared_total(group: list[int], signals: dict[int, PageSignal]) -> i
     return None
 
 
-def split_pdf(pdf_path: str | Path, output_dir: str | Path, *, verbose: bool = False) -> list[Path]:
+def _chunk_document_groups(groups: list[list[int]], max_pages: int) -> list[list[list[int]]]:
+    return chunk_document_groups(groups, max_pages)
+
+
+def _fixed_page_chunks(total_pages: int, chunk_pages: int) -> list[tuple[int, int]]:
+    return fixed_page_chunks(total_pages, chunk_pages)
+
+
+def _windowed_groups_from_signals(
+    signals: list[tuple[int, PageSignal]],
+    chunk_pages: int,
+) -> list[list[int]]:
+    return windowed_groups_from_signals(
+        signals,
+        chunk_pages,
+        group_pages_fn=_group_image_pages,
+    )
+
+
+def _write_fixed_chunk_files(
+    reader: PdfReader,
+    chunks: list[tuple[int, int]],
+    chunk_dir: Path,
+) -> list[Path]:
+    return write_fixed_chunk_files(reader, chunks, chunk_dir)
+
+
+def _analyze_chunk_file_signals(
+    chunk_path: Path,
+    abs_start: int,
+) -> list[tuple[int, PageSignal]]:
+    return analyze_chunk_file_signals(
+        chunk_path,
+        abs_start,
+        analyze_page_fn=analyze_page,
+        shutdown_ocr_pool_fn=_shutdown_ocr_pool,
+    )
+
+
+def _windowed_groups_from_chunk_files(
+    chunk_ranges: list[tuple[int, int]],
+    chunk_paths: list[Path],
+) -> tuple[list[list[int]], dict[int, PageSignal]]:
+    return windowed_groups_from_chunk_files(
+        chunk_ranges,
+        chunk_paths,
+        group_pages_fn=_group_image_pages,
+        analyze_chunk_file_signals_fn=_analyze_chunk_file_signals,
+    )
+
+
+def _iter_windowed_groups_from_chunk_files(
+    chunk_ranges: list[tuple[int, int]],
+    chunk_paths: list[Path],
+):
+    return iter_windowed_groups_from_chunk_files(
+        chunk_ranges,
+        chunk_paths,
+        group_pages_fn=_group_image_pages,
+        analyze_chunk_file_signals_fn=_analyze_chunk_file_signals,
+    )
+
+
+def split_pdf(
+    pdf_path: str | Path,
+    output_dir: str | Path,
+    *,
+    verbose: bool = False,
+    chunk_max_pages: int | None = None,
+) -> list[Path]:
     """Unified PDF splitter: analyzes every page for document boundary signals,
     groups them, and writes one PDF per logical document.
 
@@ -1268,7 +1300,10 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path, *, verbose: bool = F
         pdf_path:   Path to the source PDF.
         output_dir: Directory where split output files are written.
         verbose:    When True, prints a per-page signal table to stdout after
-                    analysis — useful for diagnosing mis-splits on new files.
+                analysis — useful for diagnosing mis-splits on new files.
+        chunk_max_pages:
+                Optional page budget for batching whole document groups.
+                Chunk boundaries are inserted only between groups.
     """
     path = Path(pdf_path)
     out_dir = Path(output_dir)
@@ -1279,33 +1314,164 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path, *, verbose: bool = F
     out_dir.mkdir(parents=True, exist_ok=True)
     reader = PdfReader(str(path))
 
-    import fitz
-    fitz_doc = fitz.open(str(path))
+    fitz_doc = None
 
-    signals_list: list[tuple[int, PageSignal]] = []
     signals_dict: dict[int, PageSignal] = {}
+    groups: list[list[int]] = []
 
     try:
-        for i in range(len(reader.pages)):
-            signal = analyze_page(reader.pages[i], fitz_doc=fitz_doc, page_idx=i)
-            signals_list.append((i, signal))
-            signals_dict[i] = signal
-            gc.collect()  # release OCR buffers from the processed page
+        overlap_chunk_pages = _OVERLAP_CHUNK_PAGES
+
+        if overlap_chunk_pages > 0:
+            chunks = _fixed_page_chunks(len(reader.pages), overlap_chunk_pages)
+
+            # Persist chunk PDFs under the output directory so the source/input
+            # location stays untouched and operators can inspect chunk artifacts.
+            chunk_dir = out_dir / "_overlap_chunks"
+            if chunk_dir.exists():
+                shutil.rmtree(chunk_dir)
+            chunk_dir.mkdir(parents=True, exist_ok=True)
+
+            chunk_paths = _write_fixed_chunk_files(reader, chunks, chunk_dir)
+            windows = max(0, len(chunks) - 1)
+
+            if verbose:
+                print("\n--- OVERLAP WINDOW REPORT ---")
+                print(f"Fixed chunk size: {overlap_chunk_pages}")
+                print(f"Chunks: {len(chunks)}")
+                print(f"Windows: {windows}")
+                print(f"Chunk files directory: {chunk_dir}")
+                print("Raw chunk PDFs were written to disk and processed in sliding pairs.")
+                print("Per-page signal table is skipped in overlap mode to preserve memory.")
+
+            # Stream dedup + writes as groups are emitted so outputs appear
+            # progressively; avoid holding all groups/signals until the end.
+            import hashlib
+
+            def group_hash(group):
+                writer = PdfWriter()
+                for idx in group:
+                    writer.add_page(reader.pages[idx])
+                buf = io.BytesIO()
+                writer.write(buf)
+                h = hashlib.sha256(buf.getvalue()).hexdigest()
+                del writer, buf
+                return h
+
+            seen_hashes = set()
+            seen_semantic_keys: set[str] = set()
+            hash_to_groups = {}
+            semantic_to_groups: dict[str, list[tuple[int, list[int]]]] = {}
+            semantic_dedup_hits: list[tuple[int, int, str]] = []
+
+            used_names: dict[str, int] = {}
+            written: list[Path] = []
+            groups_before_dedup = 0
+
+            emitted_any = False
+            first_group_fallback: tuple[list[int], dict[int, PageSignal]] | None = None
+
+            for group_idx, (group, group_signals) in enumerate(
+                _iter_windowed_groups_from_chunk_files(chunks, chunk_paths)
+            ):
+                groups_before_dedup += 1
+                h = group_hash(group)
+                if h not in hash_to_groups:
+                    hash_to_groups[h] = []
+                hash_to_groups[h].append((group_idx, group))
+
+                if first_group_fallback is None:
+                    first_group_fallback = (group, group_signals)
+
+                if h in seen_hashes:
+                    continue
+
+                title = _group_primary_title(group, group_signals)
+                title_key = _semantic_title_key(title)
+                total = _group_declared_total(group, group_signals)
+                semantic_key = None
+
+                if title_key and (total is not None or len(group) > 1):
+                    semantic_key = f"{title_key}|{total if total is not None else len(group)}"
+                    semantic_to_groups.setdefault(semantic_key, []).append((group_idx, group))
+
+                if semantic_key is not None and semantic_key in seen_semantic_keys:
+                    first_idx = semantic_to_groups[semantic_key][0][0]
+                    semantic_dedup_hits.append((first_idx, group_idx, semantic_key))
+                    continue
+
+                seen_hashes.add(h)
+                if semantic_key is not None:
+                    seen_semantic_keys.add(semantic_key)
+
+                dest = _write_image_group(reader, group, group_signals, out_dir, used_names)
+                written.append(dest)
+                emitted_any = True
+                first_group_fallback = None  # no longer needed once at least one group is written
+                gc.collect()
+
+            # If no group passed dedup, forcibly write the first group seen as a fallback
+            if not emitted_any and first_group_fallback is not None:
+                group, group_signals = first_group_fallback
+                dest = _write_image_group(reader, group, group_signals, out_dir, used_names)
+                written.append(dest)
+                if verbose:
+                    print("\n--- PATCH: No groups emitted, wrote fallback output from first chunk ---")
+
+            if verbose:
+                print(f"\n--- DEDUPLICATION REPORT ---")
+                print(f"Groups before dedup: {groups_before_dedup}")
+                print(f"Groups after dedup: {len(written)}")
+                print(f"Unique hashes: {len(seen_hashes)}")
+                for h, group_list in sorted(hash_to_groups.items(), key=lambda x: -len(x[1])):
+                    if len(group_list) > 1:
+                        print(f"  DUPLICATE {h[:8]}... appears {len(group_list)} times: groups {[g[0] for g in group_list]}")
+                for first_idx, dup_idx, semantic_key in semantic_dedup_hits:
+                    print(
+                        "  SEMANTIC DUPLICATE "
+                        f"groups {first_idx} and {dup_idx} via key {semantic_key[:40]}..."
+                    )
+
+            return written
+
+        else:
+            import fitz
+            fitz_doc = fitz.open(str(path))
+            signals_list: list[tuple[int, PageSignal]] = []
+            for i in range(len(reader.pages)):
+                signal = analyze_page(reader.pages[i], fitz_doc=fitz_doc, page_idx=i)
+                signals_list.append((i, signal))
+                signals_dict[i] = signal
+                gc.collect()  # release OCR buffers from the processed page
+
+            if verbose:
+                print(f"\n{'Page':>5}  {'Classification':<15}  {'PgNum':>5}  {'Total':>5}  Title")
+                print("-" * 80)
+                for i, sig in signals_list:
+                    title_str = (sig.title_text or "")[:40]
+                    pg = str(sig.page_num_in_doc) if sig.page_num_in_doc is not None else "-"
+                    tot = str(sig.total_pages_in_doc) if sig.total_pages_in_doc is not None else "-"
+                    print(f"{i + 1:>5}  {sig.classification:<15}  {pg:>5}  {tot:>5}  {title_str}")
+                print()
+
+            groups = _group_image_pages(signals_list)
+
+            overlap_chunk_pages = 0
     finally:
-        fitz_doc.close()
+        if fitz_doc is not None:
+            fitz_doc.close()
         _shutdown_ocr_pool()
 
-    if verbose:
-        print(f"\n{'Page':>5}  {'Classification':<15}  {'PgNum':>5}  {'Total':>5}  Title")
-        print("-" * 80)
-        for i, sig in signals_list:
-            title_str = (sig.title_text or "")[:40]
-            pg = str(sig.page_num_in_doc) if sig.page_num_in_doc is not None else "-"
-            tot = str(sig.total_pages_in_doc) if sig.total_pages_in_doc is not None else "-"
-            print(f"{i + 1:>5}  {sig.classification:<15}  {pg:>5}  {tot:>5}  {title_str}")
-        print()
+    effective_chunk_max = _CHUNK_MAX_PAGES if chunk_max_pages is None else max(0, chunk_max_pages)
+    grouped_chunks = _chunk_document_groups(groups, effective_chunk_max)
 
-    groups = _group_image_pages(signals_list)
+    if verbose and effective_chunk_max > 0:
+        print("\n--- CHUNKING REPORT ---")
+        print(f"Chunk max pages: {effective_chunk_max}")
+        print(f"Chunks: {len(grouped_chunks)}")
+        for idx, chunk in enumerate(grouped_chunks, start=1):
+            pages = sum(len(g) for g in chunk)
+            print(f"  Chunk {idx}: {len(chunk)} group(s), {pages} page(s)")
 
     # Hash-based deduplication across the whole file (not only back-to-back groups).
     import hashlib
@@ -1324,7 +1490,9 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path, *, verbose: bool = F
     hash_to_groups = {}
     semantic_to_groups: dict[str, list[tuple[int, list[int]]]] = {}
     semantic_dedup_hits: list[tuple[int, int, str]] = []
-    for i, group in enumerate(groups):
+    flat_groups = [group for chunk in grouped_chunks for group in chunk]
+
+    for i, group in enumerate(flat_groups):
         h = group_hash(group)
         if h not in hash_to_groups:
             hash_to_groups[h] = []
@@ -1353,7 +1521,7 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path, *, verbose: bool = F
     
     if verbose:
         print(f"\n--- DEDUPLICATION REPORT ---")
-        print(f"Groups before dedup: {len(groups)}")
+        print(f"Groups before dedup: {len(flat_groups)}")
         print(f"Groups after dedup: {len(deduped_groups)}")
         print(f"Unique hashes: {len(seen_hashes)}")
         for h, group_list in sorted(hash_to_groups.items(), key=lambda x: -len(x[1])):

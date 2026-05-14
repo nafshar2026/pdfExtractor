@@ -1,6 +1,6 @@
 """Tests for image-based PDF splitting via PaddleOCR title detection."""
 
-from pdf_extractor.image_splitter import PageSignal, _extract_ocr_texts
+from pdf_extractor.image_splitter import PageSignal, _extract_ocr_texts, _windowed_groups_from_signals
 
 
 def test_page_signal_new_doc():
@@ -641,6 +641,47 @@ def test_group_same_title_after_different_doc_starts_new_group():
     assert groups == [[0, 1], [2], [3]]
 
 
+def test_windowed_groups_emits_left_chunk_then_final_window():
+    """Sliding windows emit left-chunk groups and all groups from the final window."""
+    signals = [
+        (0, _sig("NEW_DOC", "A")),
+        (1, _sig("CONTINUATION", page_num=2, total=2)),
+        (2, _sig("NEW_DOC", "B")),
+        (3, _sig("CONTINUATION", page_num=2, total=2)),
+        (4, _sig("NEW_DOC", "C")),
+        (5, _sig("CONTINUATION", page_num=2, total=2)),
+    ]
+
+    groups = _windowed_groups_from_signals(signals, chunk_pages=2)
+    assert groups == [[0, 1], [2, 3], [4, 5]]
+
+
+def test_windowed_groups_keeps_boundary_spanning_document_together():
+    """A document that crosses a fixed chunk boundary remains one group."""
+    signals = [
+        (0, _sig("NEW_DOC", "Doc A")),
+        (1, _sig("CONTINUATION", page_num=2, total=3)),
+        (2, _sig("CONTINUATION", page_num=3, total=3)),
+        (3, _sig("NEW_DOC", "Doc B")),
+    ]
+
+    groups = _windowed_groups_from_signals(signals, chunk_pages=2)
+    assert groups == [[0, 1, 2], [3]]
+
+
+def test_windowed_groups_skips_orphan_carryover_window_start():
+    """Tail groups that start at a new window without NEW_DOC are not re-emitted."""
+    signals = [
+        (0, _sig("NEW_DOC", "Doc A")),
+        (1, _sig("CONTINUATION", page_num=2, total=4)),
+        (2, _sig("CONTINUATION", page_num=3, total=4)),
+        (3, _sig("CONTINUATION", page_num=4, total=4)),
+    ]
+
+    groups = _windowed_groups_from_signals(signals, chunk_pages=2)
+    assert groups == [[0, 1, 2, 3]]
+
+
 from pdf_extractor.image_splitter import split_pdf
 import pytest
 
@@ -720,6 +761,33 @@ def test_split_pdf_semantic_dedup_normalized_title_variants(tmp_path):
         written = split_pdf(source, out_dir)
 
     assert len(written) == 1
+
+
+def test_split_pdf_overlap_mode_multi_window_runs(tmp_path, monkeypatch):
+    """Overlap mode with multiple fixed chunks completes and emits expected groups."""
+    source = tmp_path / "source.pdf"
+    writer = PdfWriter()
+    # Unique page sizes avoid byte-hash dedup collapsing unrelated groups in test.
+    for i in range(5):
+        writer.add_blank_page(width=612 + i, height=792)
+    with source.open("wb") as f:
+        writer.write(f)
+
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("PDF_EXTRACTOR_OVERLAP_CHUNK_PAGES", "2")
+
+    signals = [
+        PageSignal("NEW_DOC", "Doc A", 1, 2),
+        PageSignal("CONTINUATION", None, 2, 2),
+        PageSignal("NEW_DOC", "Doc B", 1, 2),
+        PageSignal("CONTINUATION", None, 2, 2),
+        PageSignal("NEW_DOC", "Doc C", None, None),
+    ]
+
+    with patch("pdf_extractor.image_splitter.analyze_page", side_effect=signals):
+        written = split_pdf(source, out_dir)
+
+    assert len(written) == 3
 
 
 from unittest.mock import patch
