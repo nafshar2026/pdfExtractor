@@ -338,8 +338,11 @@ def test_split_pdf_groups_signals_into_documents(tmp_path):
     """split_pdf groups all pages by analyze_page signals into separate PDFs."""
     source = tmp_path / "source.pdf"
     w = PdfWriter()
-    for _ in range(4):
-        w.add_blank_page(width=612, height=792)
+    # Use mixed page sizes so hash-based dedup does not collapse both groups.
+    w.add_blank_page(width=612, height=792)
+    w.add_blank_page(width=612, height=792)
+    w.add_blank_page(width=613, height=792)
+    w.add_blank_page(width=613, height=792)
     with source.open("wb") as f:
         w.write(f)
     out_dir = tmp_path / "out"
@@ -355,7 +358,7 @@ def test_split_pdf_groups_signals_into_documents(tmp_path):
         written = split_pdf(source, out_dir)
 
     assert len(written) == 2
-    assert written[0].name == "Doc_One.pdf"
+    assert written[0].name == "pages_1-2.pdf"
     assert written[1].name == "Doc_Two.pdf"
 
 
@@ -681,6 +684,42 @@ def test_split_pdf_routes_image_pages_through_analyze(tmp_path):
 
     assert mock_analyze.call_count == 2
     assert len(result) == 2
+
+
+def test_split_pdf_semantic_dedup_normalized_title_variants(tmp_path):
+    """Title variants differing only by punctuation/(digits) are deduplicated."""
+    source = tmp_path / "source.pdf"
+    writer = PdfWriter()
+    # Use different page sizes so byte-hash dedup alone would not collapse groups.
+    writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=613, height=792)
+    writer.add_blank_page(width=613, height=792)
+    with source.open("wb") as f:
+        writer.write(f)
+    out_dir = tmp_path / "out"
+
+    signals = [
+        PageSignal(
+            "NEW_DOC",
+            "MOTOR VEHICLE RETAIL INSTALLMENT SALES CONTRACT-SIMPLE FINANCE CHARGE",
+            1,
+            2,
+        ),
+        PageSignal("CONTINUATION", None, 2, 2),
+        PageSignal(
+            "NEW_DOC",
+            "MOTORVEHICLE RETAIL INSTALLMENT SALES CONTRACT SIMPLE FINANCE CHARGE (2)",
+            1,
+            2,
+        ),
+        PageSignal("CONTINUATION", None, 2, 2),
+    ]
+
+    with patch("pdf_extractor.image_splitter.analyze_page", side_effect=signals):
+        written = split_pdf(source, out_dir)
+
+    assert len(written) == 1
 
 
 from unittest.mock import patch

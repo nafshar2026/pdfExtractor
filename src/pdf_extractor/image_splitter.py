@@ -30,10 +30,13 @@ from .extractor import (
 )
 
 # Matches "Page 3 of 6" in any page type — used to identify continuations and first pages.
-_CONTINUATION_RE = re.compile(r"Page\s+(\d+)\s+of\s+(\d+)", re.IGNORECASE)
+# OCR commonly collapses spaces in pagination text (e.g. "PAGE5OF6", "Page 1 of6").
+_CONTINUATION_RE = re.compile(r"Page\s*(\d+)\s*of\s*(\d+)", re.IGNORECASE)
 
 # OCR title candidates longer than this are likely disclaimers or body text, not titles.
-_TITLE_MAX_CHARS = 60
+# Increased from 60 to 100 to accommodate multi-word contract titles like
+# "MOTOR VEHICLE RETAIL INSTALLMENT SALES CONTRACT - SIMPLE FINANCE CHARGE" (69 chars).
+_TITLE_MAX_CHARS = 100
 
 # Fraction of page height scanned from the top for title detection on image pages.
 _TOP_STRIP_FRACTION = 0.25
@@ -266,8 +269,14 @@ def _normalize_detected_title(text: str) -> str:
     """
     normalized = re.sub(r"(?<=\d)(?=[A-Z])", " ", text, count=1).strip()
     words = normalized.split()
-    if len(words) >= 2 and sum(c.isdigit() for c in words[0]) >= 3:
-        normalized = " ".join(words[1:])
+    # Drop only short ID-like prefixes (e.g. "H18554") and keep meaningful
+    # form-code tokens like "LAW553" so footer suppression can match them.
+    if len(words) >= 2:
+        first = words[0]
+        digits = sum(c.isdigit() for c in first)
+        letters = sum(c.isalpha() for c in first)
+        if digits >= 3 and letters <= 2:
+            normalized = " ".join(words[1:])
     return normalized
 
 
@@ -342,7 +351,61 @@ def _filter_layout_noise_for_title(ocr_result: list | None) -> list | None:
 _MIN_TITLE_SCORE = 50.0
 
 
-def _select_best_title(ocr_result: list | None) -> str | None:
+def _looks_like_form_code_title(text: str) -> bool:
+    """Heuristic for short alphanumeric form-code strings (not real titles)."""
+    if not text:
+        return False
+    has_alpha = any(c.isalpha() for c in text)
+    has_digit = any(c.isdigit() for c in text)
+    has_sep = any(c in text for c in "-/")
+    return has_alpha and has_digit and has_sep and len(text.split()) <= 8
+
+
+def _title_appears_top_and_footer(ocr_result: list | None, candidate: str) -> bool:
+    """Return True when the same normalized text appears near top and footer."""
+    if not ocr_result or not ocr_result[0] or not candidate:
+        return False
+
+    key = _title_key(_normalize_detected_title(candidate))
+    if not key:
+        return False
+
+    page_height_est = 1.0
+    for line in ocr_result[0]:
+        if not line or len(line) < 2:
+            continue
+        box = line[0]
+        try:
+            page_height_est = max(page_height_est, float(max(pt[1] for pt in box)))
+        except (TypeError, ValueError, IndexError):
+            continue
+
+    seen_top = False
+    seen_bottom = False
+    for line in ocr_result[0]:
+        if not line or len(line) < 2 or not line[1]:
+            continue
+        try:
+            text = _normalize_detected_title(line[1][0].strip())
+            box = line[0]
+            cy = (max(pt[1] for pt in box) + min(pt[1] for pt in box)) / 2.0
+        except (TypeError, ValueError, IndexError):
+            continue
+
+        text_key = _title_key(text)
+        if not (_is_footer_variant(key, text_key) or _is_footer_variant(text_key, key)):
+            continue
+        if cy <= page_height_est * 0.35:
+            seen_top = True
+        if cy >= page_height_est * 0.70:
+            seen_bottom = True
+        if seen_top and seen_bottom:
+            return True
+
+    return False
+
+
+def _select_best_title(ocr_result: list | None, *, footer_texts: list[str] | None = None) -> str | None:
     """Pick the best title candidate from OCR results.
 
     Scores each text by font height (box_height) with a multiplier that strongly
@@ -357,6 +420,12 @@ def _select_best_title(ocr_result: list | None) -> str | None:
     """
     if not ocr_result or not ocr_result[0]:
         return None
+
+    footer_keys = {
+        _title_key(_normalize_detected_title(t.strip()))
+        for t in (footer_texts or [])
+        if t and _title_key(_normalize_detected_title(t.strip()))
+    }
 
     # Remove layout-driven field-label noise first (dynamic per page).
     ocr_result = _filter_layout_noise_for_title(ocr_result)
@@ -384,6 +453,11 @@ def _select_best_title(ocr_result: list | None) -> str | None:
         text = _normalize_detected_title(line[1][0].strip())
         if not text or len(text) < 4 or len(text) > _TITLE_MAX_CHARS:
             continue
+        words = text.split()
+        n = len(words)
+        text_key = _title_key(text)
+        if any(_is_footer_variant(text_key, footer_key) for footer_key in footer_keys):
+            continue
         # Field labels, form numbers with metadata, addresses
         if any(c in text for c in ":(#@"):
             continue
@@ -392,8 +466,6 @@ def _select_best_title(ocr_result: list | None) -> str | None:
         # survive; phone numbers (847-882-8400 = 10d) and zip+4 strings do not.
         if sum(c.isdigit() for c in text) >= 7:
             continue
-        words = text.split()
-        n = len(words)
         # Long sentences are disclaimers, not titles
         if n > 8:
             continue
@@ -442,6 +514,20 @@ def _title_key(title: str) -> str:
       "VEhICLE BUYERS ORDER"  →  "VEHICLEBUYERSORDER"  (mixed-case OCR)
     """
     return re.sub(r"[^A-Z0-9]", "", title.upper())
+
+
+def _is_footer_variant(candidate_key: str, footer_key: str) -> bool:
+    """True when footer_key is candidate_key with extra trailing/leading noise.
+
+    Example: LAW553TXARBEA421 matches LAW553TXARBEA421V1PAGE1OF6.
+    """
+    if not candidate_key or not footer_key:
+        return False
+    if candidate_key == footer_key:
+        return True
+    if len(candidate_key) >= 10 and candidate_key in footer_key:
+        return True
+    return False
 
 
 def _render_page_fitz(fitz_doc, page_idx: int) -> Image.Image | None:
@@ -503,6 +589,21 @@ def _extract_text_title(
     strings like "Title Last Name First Middle Suffix" (6 words).
     """
     half = max(len(lines) // 2, 10)
+
+    # If a candidate string also appears in the footer region, it is likely a
+    # form code/footer label (not a document title).
+    footer_window = max(8, len(lines) // 4)
+    footer_start = max(0, len(lines) - footer_window)
+    footer_keys = {
+        _title_key(line.rstrip("*").strip())
+        for line in lines[footer_start:]
+        if line and _title_key(line.rstrip("*").strip())
+    }
+
+    def appears_in_footer(candidate: str) -> bool:
+        candidate_key = _title_key(candidate)
+        return any(_is_footer_variant(candidate_key, footer_key) for footer_key in footer_keys)
+
     result: str | None = None
     best_prefer_last: str | None = None
     best_prefer_last_score = float("-inf")
@@ -553,6 +654,8 @@ def _extract_text_title(
             continue
         if require_doc_word and not _TITLE_DOCWORD_RE.search(stripped):
             continue
+        if appears_in_footer(stripped):
+            continue
         if stripped.upper() == stripped and any(c.isalpha() for c in stripped):
             if prefer_last:
                 score = 0.0
@@ -602,6 +705,8 @@ def _extract_text_title(
         if not any(sum(c.isalpha() for c in w) >= 3 for w in words):
             continue
         if sum(c.isdigit() for c in stripped) >= 7:
+            continue
+        if appears_in_footer(stripped):
             continue
         # Skip ALL-CAPS — those already had their chance in Pass 1.
         if stripped.upper() == stripped:
@@ -771,16 +876,49 @@ def _analyze_image_page(fitz_doc, page_idx: int) -> PageSignal:
     # --- Top strip: title detection ---
     top_strip = pil_image.crop((0, 0, width, int(height * _TOP_STRIP_FRACTION)))
     top_arr = np.array(top_strip)
-    del top_strip, pil_image  # full image no longer needed
+    del top_strip
     top_result = _ocr_infer(top_arr)
     del top_arr
     top_texts = _extract_ocr_texts(top_result)
 
+    # Only include actual footer content (pagination "Page N of M") in suppression list,
+    # not all bottom-strip text which may include body content from middle of page.
+    # This prevents disclaimer text from being treated as form-code footers.
+    footer_texts_for_title = [t for t in bottom_texts if _CONTINUATION_RE.search(t)]
     ocr_combined = " ".join(bottom_texts + top_texts)
+
+    # Fallback: if bottom-strip OCR missed pagination, scan full-page OCR text
+    # for Page N of M before relying on title-only splitting.
+    full_result = None
+    if page_one_total is None:
+        full_arr = np.array(pil_image)
+        full_result = _ocr_infer(full_arr)
+        del full_arr
+        full_texts = _extract_ocr_texts(full_result)
+        for text in full_texts:
+            m = _CONTINUATION_RE.search(text)
+            if not m:
+                continue
+            page_num = int(m.group(1))
+            total = int(m.group(2))
+            if page_num > 1:
+                del bottom_result, top_result, pil_image, full_result
+                return PageSignal(
+                    classification="CONTINUATION",
+                    title_text=None,
+                    page_num_in_doc=page_num,
+                    total_pages_in_doc=total,
+                )
+            if page_num == 1 and total > 1:
+                page_one_total = total
+                break
+
     del bottom_texts, top_texts
     inferred = _infer_content_title(ocr_combined)
     if inferred:
-        del bottom_result, top_result
+        del bottom_result, top_result, pil_image
+        if full_result is not None:
+            del full_result
         return PageSignal(
             classification="NEW_DOC",
             title_text=inferred,
@@ -788,8 +926,20 @@ def _analyze_image_page(fitz_doc, page_idx: int) -> PageSignal:
             total_pages_in_doc=page_one_total,
         )
 
-    best_title = _select_best_title(top_result)
+    best_title = _select_best_title(top_result, footer_texts=footer_texts_for_title)
+
+    if best_title and _looks_like_form_code_title(best_title):
+        if full_result is None:
+            full_arr = np.array(pil_image)
+            full_result = _ocr_infer(full_arr)
+            del full_arr
+        if _title_appears_top_and_footer(full_result, best_title):
+            best_title = None
+
+    del pil_image
     del bottom_result, top_result
+    if full_result is not None:
+        del full_result
 
     if best_title:
         return PageSignal(
@@ -868,13 +1018,45 @@ def _group_image_pages(
     if not signals:
         return []
 
+    # Bridge isolated OCR misses in pagination: when a page with no page-number
+    # context sits between CONTINUATION pages whose numbers differ by 2 and share
+    # the same total (e.g., 2/6, ?, 4/6), treat the middle page as continuation.
+    normalized_signals = list(signals)
+    for i in range(1, len(normalized_signals) - 1):
+        prev_sig = normalized_signals[i - 1][1]
+        abs_idx, cur_sig = normalized_signals[i]
+        next_sig = normalized_signals[i + 1][1]
+
+        if cur_sig.classification == "CONTINUATION" or cur_sig.page_num_in_doc is not None:
+            continue
+        if prev_sig.classification != "CONTINUATION" or next_sig.classification != "CONTINUATION":
+            continue
+        if prev_sig.page_num_in_doc is None or next_sig.page_num_in_doc is None:
+            continue
+        if prev_sig.total_pages_in_doc is None or next_sig.total_pages_in_doc is None:
+            continue
+        if prev_sig.total_pages_in_doc != next_sig.total_pages_in_doc:
+            continue
+        if (next_sig.page_num_in_doc - prev_sig.page_num_in_doc) != 2:
+            continue
+
+        normalized_signals[i] = (
+            abs_idx,
+            PageSignal(
+                classification="CONTINUATION",
+                title_text=None,
+                page_num_in_doc=prev_sig.page_num_in_doc + 1,
+                total_pages_in_doc=prev_sig.total_pages_in_doc,
+            ),
+        )
+
     groups: list[list[int]] = []
     current: list[int] = []
     current_total: int | None = None
     current_has_anchor: bool = False  # True once group contains a NEW_DOC or CONTINUATION page
     current_first_title: str | None = None  # title of the first titled page in the current group
 
-    for abs_idx, signal in signals:
+    for abs_idx, signal in normalized_signals:
         if signal.classification == "CONTINUATION":
             current_has_anchor = True
             if (current and
@@ -979,15 +1161,28 @@ def _write_image_group(
     Returns:
         Path to the written PDF file.
     """
-    # Scan all pages in the group for the first non-None title.  The titled page
-    # is usually first, but leading AMBIGUOUS pages (prepended by _group_image_pages)
-    # have no title, so the anchor title may be on a later page.
+    # For paginated groups, only trust a title found on page 1 of that document.
+    # Mid-sequence titles are often section headers/field labels when OCR misses
+    # one footer line (e.g., page 3 in a 1..6 run).
     raw_title = None
-    for idx in group:
-        sig = signals.get(idx)
-        if sig and sig.title_text:
-            raw_title = sig.title_text
-            break
+    has_pagination = any(
+        (signals.get(idx) and signals[idx].page_num_in_doc is not None)
+        for idx in group
+    )
+
+    if has_pagination:
+        for idx in group:
+            sig = signals.get(idx)
+            if sig and sig.page_num_in_doc == 1 and sig.title_text:
+                raw_title = sig.title_text
+                break
+    else:
+        # Non-paginated groups keep the prior behavior: first available title.
+        for idx in group:
+            sig = signals.get(idx)
+            if sig and sig.title_text:
+                raw_title = sig.title_text
+                break
 
     if raw_title:
         base_name = _sanitize_image_title(raw_title)
@@ -1008,6 +1203,57 @@ def _write_image_group(
         writer.write(handle)
 
     return destination
+
+
+def _group_primary_title(group: list[int], signals: dict[int, PageSignal]) -> str | None:
+    """Return the preferred title for a grouped document.
+
+    Mirrors naming logic used when writing output files: for paginated groups,
+    trust the title on page 1 of the logical document; otherwise use the first
+    available title in the group.
+    """
+    has_pagination = any(
+        (signals.get(idx) and signals[idx].page_num_in_doc is not None)
+        for idx in group
+    )
+
+    if has_pagination:
+        for idx in group:
+            sig = signals.get(idx)
+            if sig and sig.page_num_in_doc == 1 and sig.title_text:
+                return sig.title_text
+    else:
+        for idx in group:
+            sig = signals.get(idx)
+            if sig and sig.title_text:
+                return sig.title_text
+
+    return None
+
+
+def _semantic_title_key(raw_title: str | None) -> str | None:
+    """Build a dedup key from title text that survives punctuation/noise.
+
+    Rules:
+    - remove trailing parenthetical copy markers like "(2)"
+    - keep only alphanumeric characters
+    - uppercase for case-insensitive comparison
+    """
+    if not raw_title:
+        return None
+
+    cleaned = re.sub(r"\s*\(\d+\)\s*$", "", raw_title).strip()
+    key = _title_key(cleaned)
+    return key or None
+
+
+def _group_declared_total(group: list[int], signals: dict[int, PageSignal]) -> int | None:
+    """Return declared total pages (N in Page X of N) when present."""
+    for idx in group:
+        sig = signals.get(idx)
+        if sig and sig.total_pages_in_doc is not None:
+            return sig.total_pages_in_doc
+    return None
 
 
 def split_pdf(pdf_path: str | Path, output_dir: str | Path, *, verbose: bool = False) -> list[Path]:
@@ -1073,16 +1319,37 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path, *, verbose: bool = F
         return hashlib.sha256(buffer.getvalue()).hexdigest()
 
     seen_hashes = set()
+    seen_semantic_keys: set[str] = set()
     deduped_groups = []
     hash_to_groups = {}
+    semantic_to_groups: dict[str, list[tuple[int, list[int]]]] = {}
+    semantic_dedup_hits: list[tuple[int, int, str]] = []
     for i, group in enumerate(groups):
         h = group_hash(group)
         if h not in hash_to_groups:
             hash_to_groups[h] = []
         hash_to_groups[h].append((i, group))
         if h not in seen_hashes:
+            title = _group_primary_title(group, signals_dict)
+            title_key = _semantic_title_key(title)
+            total = _group_declared_total(group, signals_dict)
+            semantic_key = None
+
+            # Only use semantic dedup when title + page-count context exists.
+            # This avoids over-merging unrelated single-page forms with generic titles.
+            if title_key and (total is not None or len(group) > 1):
+                semantic_key = f"{title_key}|{total if total is not None else len(group)}"
+                semantic_to_groups.setdefault(semantic_key, []).append((i, group))
+
+            if semantic_key is not None and semantic_key in seen_semantic_keys:
+                first_idx = semantic_to_groups[semantic_key][0][0]
+                semantic_dedup_hits.append((first_idx, i, semantic_key))
+                continue
+
             deduped_groups.append(group)
             seen_hashes.add(h)
+            if semantic_key is not None:
+                seen_semantic_keys.add(semantic_key)
     
     if verbose:
         print(f"\n--- DEDUPLICATION REPORT ---")
@@ -1092,6 +1359,11 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path, *, verbose: bool = F
         for h, group_list in sorted(hash_to_groups.items(), key=lambda x: -len(x[1])):
             if len(group_list) > 1:
                 print(f"  DUPLICATE {h[:8]}... appears {len(group_list)} times: groups {[g[0] for g in group_list]}")
+        for first_idx, dup_idx, semantic_key in semantic_dedup_hits:
+            print(
+                "  SEMANTIC DUPLICATE "
+                f"groups {first_idx} and {dup_idx} via key {semantic_key[:40]}..."
+            )
 
     written: list[Path] = []
     used_names: dict[str, int] = {}
