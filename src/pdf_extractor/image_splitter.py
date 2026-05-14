@@ -52,6 +52,10 @@ _OCR_MAX_WIDTH_DEFAULT = 1500
 # fewer characters means the page is blank or image-only and falls back to OCR.
 _TEXT_PAGE_MIN_CHARS = 50
 
+# For digital text pages, only consider lines from the upper portion of the page
+# when using layout-aware title extraction to avoid mid-page boxed labels.
+_TEXT_TITLE_TOP_FRACTION = 0.30
+
 # Patterns used by _extract_text_title to skip non-title ALL-CAPS lines.
 _TEXT_TITLE_SKIP_RE = re.compile(
     r"FORM\s+NO\.|[:(#@©()]|\bLLC\b|\bINC\b|\bCORP\b|\bLTD\b|\bINCORPORATED\b",
@@ -59,6 +63,18 @@ _TEXT_TITLE_SKIP_RE = re.compile(
 )
 # "A. " or "1. " style section headers within a document body.
 _TEXT_TITLE_SECTION_RE = re.compile(r"^([A-Za-z]|\d+)\.\s")
+_TITLE_DOCWORD_RE = re.compile(
+    r"\b(CONTRACT|APPLICATION|DISCLOSURE|STATEMENT|AGREEMENT|NOTICE|AUTHORIZATION|ORDER|LEASE|ADDENDUM|INVOICE|ODOMETER|WARRANTY|INSURANCE|FINANCE|RETAIL)\b",
+    re.IGNORECASE,
+)
+_TITLE_STRONG_DOCWORD_RE = re.compile(
+    r"\b(CONTRACT|APPLICATION|AGREEMENT|ORDER|LEASE|ADDENDUM|INVOICE|ODOMETER)\b",
+    re.IGNORECASE,
+)
+_TITLE_WEAK_HEADER_RE = re.compile(
+    r"\b(DISCLOSURE|DISCLOSURES|DISCLAIMER|WARRANTY|WARRANTIES|NOTICE)\b",
+    re.IGNORECASE,
+)
 
 # DealerTrack credit application detection.
 # DT prints a version footer ("DT 6/17", "DT 5/23") on every page of their forms;
@@ -243,6 +259,82 @@ def _extract_ocr_texts(ocr_result: list | None) -> list[str]:
     return texts
 
 
+def _normalize_detected_title(text: str) -> str:
+    """Normalize detected titles to remove common leading id noise.
+
+    Example: ``H18554BUSINESS OR COMMERCIAL`` -> ``BUSINESS OR COMMERCIAL``.
+    """
+    normalized = re.sub(r"(?<=\d)(?=[A-Z])", " ", text, count=1).strip()
+    words = normalized.split()
+    if len(words) >= 2 and sum(c.isdigit() for c in words[0]) >= 3:
+        normalized = " ".join(words[1:])
+    return normalized
+
+
+def _filter_layout_noise_for_title(ocr_result: list | None) -> list | None:
+    """Filter OCR lines that are likely boxed/table field labels.
+
+    This is fully dynamic and page-local: no fixed coordinates are used.
+    """
+    if not ocr_result or not ocr_result[0]:
+        return ocr_result
+
+    page_lines = ocr_result[0]
+    parsed: list[dict] = []
+    for idx, line in enumerate(page_lines):
+        if not line or len(line) < 2 or not line[1]:
+            continue
+        try:
+            box = line[0]
+            x0 = float(min(pt[0] for pt in box))
+            y0 = float(min(pt[1] for pt in box))
+            x1 = float(max(pt[0] for pt in box))
+            y1 = float(max(pt[1] for pt in box))
+        except (TypeError, ValueError, IndexError):
+            continue
+        text = str(line[1][0]).strip()
+        parsed.append({
+            "idx": idx,
+            "line": line,
+            "text": text,
+            "x0": x0,
+            "y0": y0,
+            "x1": x1,
+            "y1": y1,
+            "w": max(1.0, x1 - x0),
+            "h": max(1.0, y1 - y0),
+            "cy": (y0 + y1) / 2.0,
+        })
+
+    if not parsed:
+        return ocr_result
+
+    page_width = max(item["x1"] for item in parsed)
+    filtered_lines: list = []
+
+    for item in parsed:
+        words = item["text"].split()
+        short_words = sum(1 for w in words if len(w) <= 3)
+        width_ratio = item["w"] / max(1.0, page_width)
+
+        row_density = 0
+        for other in parsed:
+            if abs(other["cy"] - item["cy"]) <= max(item["h"], other["h"]) * 0.8:
+                row_density += 1
+
+        # Dense rows of short labels are usually boxed form fields, not document titles.
+        is_label_row = (
+            row_density >= 4
+            and len(words) <= 4
+            and short_words >= max(1, len(words) - 1)
+            and width_ratio < 0.45
+        )
+        if not is_label_row:
+            filtered_lines.append(item["line"])
+
+    return [filtered_lines]
+
+
 # Minimum score (box_height × word-count multiplier) a candidate must reach to be
 # accepted as a document title.  Candidates below this threshold are treated as
 # column headers or field labels, and the page is classified as AMBIGUOUS so it
@@ -266,13 +358,30 @@ def _select_best_title(ocr_result: list | None) -> str | None:
     if not ocr_result or not ocr_result[0]:
         return None
 
+    # Remove layout-driven field-label noise first (dynamic per page).
+    ocr_result = _filter_layout_noise_for_title(ocr_result)
+    if not ocr_result or not ocr_result[0]:
+        return None
+
+    page_height_est = 1.0
+    page_width_est = 1.0
+    for line in ocr_result[0]:
+        if not line or len(line) < 2:
+            continue
+        box = line[0]
+        try:
+            page_height_est = max(page_height_est, float(max(pt[1] for pt in box)))
+            page_width_est = max(page_width_est, float(max(pt[0] for pt in box)))
+        except (TypeError, ValueError, IndexError):
+            continue
+
     best_text: str | None = None
     best_score: float = 0.0
 
     for line in ocr_result[0]:
         if not line or len(line) < 2 or not line[1]:
             continue
-        text = line[1][0].strip()
+        text = _normalize_detected_title(line[1][0].strip())
         if not text or len(text) < 4 or len(text) > _TITLE_MAX_CHARS:
             continue
         # Field labels, form numbers with metadata, addresses
@@ -297,20 +406,26 @@ def _select_best_title(ocr_result: list | None) -> str | None:
         try:
             box = line[0]
             bh = max(pt[1] for pt in box) - min(pt[1] for pt in box)
+            bw = max(pt[0] for pt in box) - min(pt[0] for pt in box)
+            cy = (max(pt[1] for pt in box) + min(pt[1] for pt in box)) / 2.0
         except (IndexError, TypeError):
             bh = 0
+            bw = 0
+            cy = page_height_est
 
         # Multi-word text scores 2× higher; single words are heavily penalised
         # so that dealer logos and column headers don't beat real titles.
         multiplier = 2.0 if n >= 2 else 0.3
-        score = bh * multiplier
+        width_bonus = 0.7 + 0.6 * (bw / max(1.0, page_width_est))
+        top_bonus = 0.7 + 0.6 * max(0.0, 1.0 - (cy / max(1.0, page_height_est)))
+        score = bh * multiplier * width_bonus * top_bonus
 
         if score > best_score:
             best_score, best_text = score, text
 
     # If every surviving candidate is a weak column header or form-field label,
     # treat the page as untitled so it merges with the previous document.
-    return best_text if best_score >= _MIN_TITLE_SCORE else None
+    return _normalize_detected_title(best_text) if best_score >= _MIN_TITLE_SCORE and best_text else None
 
 
 _logger = logging.getLogger(__name__)
@@ -362,7 +477,13 @@ def _render_page_fitz(fitz_doc, page_idx: int) -> Image.Image | None:
         return None
 
 
-def _extract_text_title(lines: list[str], *, prefer_last: bool = False) -> str | None:
+def _extract_text_title(
+    lines: list[str],
+    *,
+    prefer_last: bool = False,
+    max_words: int = 8,
+    require_doc_word: bool = False,
+) -> str | None:
     """Return a document title from the first half of page lines.
 
     Two passes are made in priority order:
@@ -383,16 +504,34 @@ def _extract_text_title(lines: list[str], *, prefer_last: bool = False) -> str |
     """
     half = max(len(lines) // 2, 10)
     result: str | None = None
+    best_prefer_last: str | None = None
+    best_prefer_last_score = float("-inf")
 
-    for line in lines[:half]:
+    # Unicode box/checkbox characters to disqualify as titles
+    BOX_CHARS = set([
+        "☐", "☑", "☒", "□", "■", "▪", "▢", "▣", "▤", "▥", "▦", "▧", "▨", "▩", "⬜", "⬛", "🗹", "🗷", "🗸", "🗵", "🗶"
+    ])
+    def has_box_char(s):
+        return any(c in BOX_CHARS for c in s)
+
+    max_chars = 100 if prefer_last else _TITLE_MAX_CHARS
+
+    for idx, line in enumerate(lines[:half]):
         stripped = line.rstrip("*").strip()
-        if len(stripped) < 4 or len(stripped) > _TITLE_MAX_CHARS:
+        # Exclude if this line or an adjacent line contains a box/checkbox character
+        if has_box_char(stripped):
+            continue
+        if idx > 0 and has_box_char(lines[idx-1]):
+            continue
+        if idx+1 < len(lines) and has_box_char(lines[idx+1]):
+            continue
+        if len(stripped) < 4 or len(stripped) > max_chars:
             continue
         if stripped.endswith("."):
             continue
-        # Skip non-ASCII lines — bilingual forms duplicate titles in a second language
-        # with accented/encoded characters that produce garbled filenames.
-        if any(ord(c) > 127 for c in stripped):
+        # Allow Unicode punctuation (e.g., en dash) but reject non-ASCII letters,
+        # which are often bilingual duplicates and produce noisy filenames.
+        if any(ord(c) > 127 and c.isalpha() for c in stripped):
             continue
         if _TEXT_TITLE_SKIP_RE.search(stripped):
             continue
@@ -401,7 +540,7 @@ def _extract_text_title(lines: list[str], *, prefer_last: bool = False) -> str |
         if _DOC_MARKER_RE.search(stripped):
             continue
         words = stripped.split()
-        if not (3 <= len(words) <= 8):
+        if not (3 <= len(words) <= max_words):
             continue
         # Address lines start with a house number (all-digit first token).
         if words[0].isdigit():
@@ -412,14 +551,31 @@ def _extract_text_title(lines: list[str], *, prefer_last: bool = False) -> str |
         # Addresses and phone numbers have ≥7 digits.
         if sum(c.isdigit() for c in stripped) >= 7:
             continue
+        if require_doc_word and not _TITLE_DOCWORD_RE.search(stripped):
+            continue
         if stripped.upper() == stripped and any(c.isalpha() for c in stripped):
             if prefer_last:
-                result = stripped  # keep scanning — last match wins
+                score = 0.0
+                if _TITLE_STRONG_DOCWORD_RE.search(stripped):
+                    score += 6.0
+                elif _TITLE_DOCWORD_RE.search(stripped):
+                    score += 2.0
+                if _TITLE_WEAK_HEADER_RE.search(stripped):
+                    score -= 2.5
+                if re.search(r"\bOR\b", stripped, re.IGNORECASE):
+                    score -= 1.0
+                # Mild bias toward later lines when tie-breaking.
+                score += idx / max(1, half)
+                if score > best_prefer_last_score:
+                    best_prefer_last_score = score
+                    best_prefer_last = stripped
             else:
-                return _sanitize_filename(stripped)  # first match wins
+                return _sanitize_filename(_normalize_detected_title(stripped))  # first match wins
 
+    if prefer_last and best_prefer_last:
+        return _sanitize_filename(_normalize_detected_title(best_prefer_last))
     if result:
-        return _sanitize_filename(result)
+        return _sanitize_filename(_normalize_detected_title(result))
 
     # Pass 2: Title Case fallback — only the first 6 lines, max 4 words.
     # ALL-CAPS strings are excluded: they already failed Pass 1 for a good reason
@@ -430,7 +586,7 @@ def _extract_text_title(lines: list[str], *, prefer_last: bool = False) -> str |
             continue
         if stripped.endswith("."):
             continue
-        if any(ord(c) > 127 for c in stripped):
+        if any(ord(c) > 127 and c.isalpha() for c in stripped):
             continue
         if _TEXT_TITLE_SKIP_RE.search(stripped):
             continue
@@ -459,12 +615,63 @@ def _extract_text_title(lines: list[str], *, prefer_last: bool = False) -> str |
             continue
         # Every alphabetic-starting word must begin with an uppercase letter.
         if all(w[0].isupper() for w in words if w and w[0].isalpha()):
-            return _sanitize_filename(stripped)
+            return _sanitize_filename(_normalize_detected_title(stripped))
 
     return None
 
 
-def _analyze_text_page(text: str) -> PageSignal:
+def _extract_text_title_with_layout(fitz_doc, page_idx: int, *, prefer_last: bool = False) -> str | None:
+    """Extract title from a digital text page using layout y-position filtering.
+
+    Uses PyMuPDF text lines and keeps only lines whose top is in the upper page
+    band. This avoids selecting all-caps labels found in boxed sections located
+    mid-page or lower.
+    """
+    if fitz_doc is None:
+        return None
+
+    try:
+        page = fitz_doc[page_idx]
+        page_height = float(page.rect.height)
+        if page_height <= 0:
+            return None
+        top_limit = page_height * _TEXT_TITLE_TOP_FRACTION
+        text_dict = page.get_text("dict")
+    except Exception:
+        return None
+
+    layout_rows: list[tuple[float, float, str]] = []
+    for block in text_dict.get("blocks", []):
+        if block.get("type", 0) != 0:
+            continue
+        for line in block.get("lines", []):
+            bbox = line.get("bbox")
+            if not bbox or len(bbox) < 4:
+                continue
+            line_top = float(bbox[1])
+            line_left = float(bbox[0])
+            if line_top > top_limit:
+                continue
+            spans = line.get("spans", [])
+            text = "".join(span.get("text", "") for span in spans).strip()
+            if text:
+                layout_rows.append((line_top, line_left, text))
+
+    if not layout_rows:
+        return None
+
+    layout_rows.sort(key=lambda row: (row[0], row[1]))
+    layout_lines = [row[2] for row in layout_rows]
+
+    return _extract_text_title(
+        layout_lines,
+        prefer_last=prefer_last,
+        max_words=12,
+        require_doc_word=True,
+    )
+
+
+def _analyze_text_page(text: str, fitz_doc=None, page_idx: int = 0) -> PageSignal:
     """Analyze a digitally-extracted text page for document boundary signals."""
     lines = _page_lines(text)
 
@@ -496,7 +703,7 @@ def _analyze_text_page(text: str) -> PageSignal:
                 )
             if page_num == 1:
                 # prefer_last: complex forms have disclosure boxes before the contract name
-                title = _extract_text_title(lines, prefer_last=True)
+                title = _extract_text_title(lines, prefer_last=True, max_words=12)
                 return PageSignal(
                     classification="NEW_DOC",
                     title_text=title,
@@ -616,7 +823,7 @@ def analyze_page(pdf_page, fitz_doc=None, page_idx: int = 0) -> PageSignal:
     """
     text = (pdf_page.extract_text() or "").strip()
     if len(text) >= _TEXT_PAGE_MIN_CHARS:
-        return _analyze_text_page(text)
+        return _analyze_text_page(text, fitz_doc=fitz_doc, page_idx=page_idx)
     return _analyze_image_page(fitz_doc, page_idx)
 
 
@@ -854,10 +1061,29 @@ def split_pdf(pdf_path: str | Path, output_dir: str | Path, *, verbose: bool = F
 
     groups = _group_image_pages(signals_list)
 
+    # Hash-based deduplication across the whole file (not only back-to-back groups).
+    import hashlib
+
+    def group_hash(group):
+        writer = PdfWriter()
+        for idx in group:
+            writer.add_page(reader.pages[idx])
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        return hashlib.sha256(buffer.getvalue()).hexdigest()
+
+    seen_hashes = set()
+    deduped_groups = []
+    for group in groups:
+        h = group_hash(group)
+        if h not in seen_hashes:
+            deduped_groups.append(group)
+            seen_hashes.add(h)
+
     written: list[Path] = []
     used_names: dict[str, int] = {}
 
-    for group in groups:
+    for group in deduped_groups:
         dest = _write_image_group(reader, group, signals_dict, out_dir, used_names)
         written.append(dest)
 
