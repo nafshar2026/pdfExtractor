@@ -907,3 +907,50 @@ def test_perceptual_hash_similar_images_within_threshold():
 
 def test_phash_threshold_value():
     assert _PHASH_THRESHOLD == 10
+
+
+from pdf_extractor.image_splitter import _write_phash_report
+
+
+def test_write_phash_report_no_hits_silent(tmp_path, capsys):
+    _write_phash_report([], tmp_path, Path("test.pdf"))
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert not (tmp_path / "suspected_duplicates.txt").exists()
+
+
+def test_write_phash_report_creates_file(tmp_path):
+    hits = [(0, 1, 7, "RETAIL CONTRACT", "RETAIL CONTRACT", 5, 42)]
+    _write_phash_report(hits, tmp_path, Path("sample.pdf"))
+    assert (tmp_path / "suspected_duplicates.txt").exists()
+
+
+def test_write_phash_report_file_content(tmp_path):
+    hits = [(0, 1, 7, "RETAIL CONTRACT", "RETAIL CONTRACT", 5, 42)]
+    _write_phash_report(hits, tmp_path, Path("sample.pdf"))
+    content = (tmp_path / "suspected_duplicates.txt").read_text()
+    assert "sample.pdf" in content
+    assert "Group 0" in content
+    assert "Group 1" in content
+    assert "page 5" in content
+    assert "page 42" in content
+    assert "RETAIL CONTRACT" in content
+    assert "[distance: 7]" in content
+
+
+def test_write_phash_report_console_output(tmp_path, capsys):
+    hits = [(0, 1, 7, "RETAIL CONTRACT", "RETAIL CONTRACT", 5, 42)]
+    _write_phash_report(hits, tmp_path, Path("sample.pdf"))
+    out = capsys.readouterr().out
+    assert "SUSPECTED DUPLICATES" in out
+    assert "distance: 7" in out
+
+
+def test_write_phash_report_multiple_hits(tmp_path):
+    hits = [
+        (0, 2, 5, "CREDIT APPLICATION", "CREDIT APPLICATION", 10, 90),
+        (1, 3, 8, "RETAIL CONTRACT", "RETAIL CONTRACT", 20, 100),
+    ]
+    _write_phash_report(hits, tmp_path, Path("batch.pdf"))
+    content = (tmp_path / "suspected_duplicates.txt").read_text()
+    assert content.count("distance:") == 2

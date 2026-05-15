@@ -1368,6 +1368,30 @@ def _iter_windowed_groups_from_chunk_files(
     )
 
 
+def _write_phash_report(
+    phash_hits: list[tuple[int, int, int, str, str, int, int]],
+    out_dir: Path,
+    source_path: Path,
+) -> None:
+    """Print suspected-duplicate pairs to console and write suspected_duplicates.txt."""
+    if not phash_hits:
+        return
+    import datetime
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    header = f"Suspected duplicates in {source_path.name} — {timestamp}"
+    hit_lines = [
+        f"  Group {a_idx} (page {page_a}) \"{title_a}\" ~ "
+        f"Group {b_idx} (page {page_b}) \"{title_b}\" [distance: {dist}]"
+        for a_idx, b_idx, dist, title_a, title_b, page_a, page_b in phash_hits
+    ]
+    print("\n--- SUSPECTED DUPLICATES (perceptual hash) ---")
+    for line in hit_lines:
+        print(line)
+    report_path = out_dir / "suspected_duplicates.txt"
+    report_path.write_text("\n".join([header] + hit_lines), encoding="utf-8")
+    print(f"  (written to {report_path})")
+
+
 def split_pdf(
     pdf_path: str | Path,
     output_dir: str | Path,
