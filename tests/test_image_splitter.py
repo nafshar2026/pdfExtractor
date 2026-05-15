@@ -817,3 +817,93 @@ def test_cli_split_documents_calls_split_pdf(tmp_path, monkeypatch):
 
     mock_split.assert_called_once_with(source, str(out_dir), verbose=False)
     assert exit_code == 0
+
+
+from pathlib import Path
+from pdf_extractor.image_splitter import (
+    _hamming_distance,
+    _perceptual_hash,
+    _PHASH_THRESHOLD,
+)
+
+
+# --- _hamming_distance ---
+
+def test_hamming_distance_identical():
+    assert _hamming_distance(0, 0) == 0
+
+
+def test_hamming_distance_one_bit():
+    assert _hamming_distance(0b0, 0b1) == 1
+
+
+def test_hamming_distance_all_64_bits():
+    assert _hamming_distance(0, 0xFFFFFFFFFFFFFFFF) == 64
+
+
+def test_hamming_distance_symmetric():
+    assert _hamming_distance(0xAB, 0xCD) == _hamming_distance(0xCD, 0xAB)
+
+
+# --- _perceptual_hash helpers ---
+
+def _make_mock_fitz_page(rgb_value: int = 128):
+    """Return a mock fitz page that renders as a solid rgb_value color at 64x83 px."""
+    mock_pix = MagicMock()
+    mock_pix.width = 64
+    mock_pix.height = 83
+    mock_pix.samples = bytes([rgb_value] * (64 * 83 * 3))
+    mock_page = MagicMock()
+    mock_page.rect.width = 100.0
+    mock_page.get_pixmap.return_value = mock_pix
+    return mock_page
+
+
+def _make_mock_fitz_doc(page: object):
+    mock_doc = MagicMock()
+    mock_doc.__getitem__ = MagicMock(return_value=page)
+    return mock_doc
+
+
+# --- _perceptual_hash ---
+
+def test_perceptual_hash_returns_int():
+    h = _perceptual_hash(_make_mock_fitz_doc(_make_mock_fitz_page()), 0)
+    assert isinstance(h, int)
+
+
+def test_perceptual_hash_deterministic():
+    doc = _make_mock_fitz_doc(_make_mock_fitz_page(120))
+    assert _perceptual_hash(doc, 0) == _perceptual_hash(doc, 0)
+
+
+def test_perceptual_hash_zero_width_returns_none():
+    mock_page = MagicMock()
+    mock_page.rect.width = 0
+    assert _perceptual_hash(_make_mock_fitz_doc(mock_page), 0) is None
+
+
+def test_perceptual_hash_exception_returns_none():
+    mock_doc = MagicMock()
+    mock_doc.__getitem__ = MagicMock(side_effect=RuntimeError("render failed"))
+    assert _perceptual_hash(mock_doc, 0) is None
+
+
+def test_perceptual_hash_identical_images_zero_distance():
+    doc = _make_mock_fitz_doc(_make_mock_fitz_page(100))
+    h1 = _perceptual_hash(doc, 0)
+    h2 = _perceptual_hash(doc, 0)
+    assert _hamming_distance(h1, h2) == 0
+
+
+def test_perceptual_hash_similar_images_within_threshold():
+    """Slight brightness difference stays within the similarity threshold."""
+    doc_a = _make_mock_fitz_doc(_make_mock_fitz_page(rgb_value=120))
+    doc_b = _make_mock_fitz_doc(_make_mock_fitz_page(rgb_value=130))
+    h_a = _perceptual_hash(doc_a, 0)
+    h_b = _perceptual_hash(doc_b, 0)
+    assert _hamming_distance(h_a, h_b) <= _PHASH_THRESHOLD
+
+
+def test_phash_threshold_value():
+    assert _PHASH_THRESHOLD == 10

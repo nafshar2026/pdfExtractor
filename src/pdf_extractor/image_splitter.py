@@ -556,6 +556,39 @@ def _render_page_fitz(fitz_doc, page_idx: int) -> Image.Image | None:
         return None
 
 
+_PHASH_THRESHOLD = 10
+
+
+def _hamming_distance(a: int, b: int) -> int:
+    return bin(a ^ b).count("1")
+
+
+def _perceptual_hash(fitz_doc, page_idx: int) -> int | None:
+    """Average hash (aHash) of a page rendered at 64-pixel width.
+
+    Renders at ~64 px wide (much smaller than OCR renders), converts to an
+    8×8 grayscale thumbnail, and returns a 64-bit integer where bit i is 1
+    if pixel i is >= the mean pixel value.  Returns None on any failure.
+    """
+    try:
+        page = fitz_doc[page_idx]
+        w_pt = page.rect.width
+        if w_pt <= 0:
+            return None
+        scale = 64 / w_pt
+        mat = __import__("fitz").Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        del pix
+        thumb = img.convert("L").resize((8, 8), Image.LANCZOS)
+        pixels = list(thumb.getdata())
+        mean = sum(pixels) / len(pixels)
+        bits = [1 if p >= mean else 0 for p in pixels]
+        return sum(b << i for i, b in enumerate(bits))
+    except Exception:
+        return None
+
+
 def _extract_text_title(
     lines: list[str],
     *,
