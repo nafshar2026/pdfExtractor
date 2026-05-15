@@ -427,18 +427,23 @@ def _select_best_title(ocr_result: list | None, *, footer_texts: list[str] | Non
         # Field labels, form numbers with metadata, addresses
         if any(c in text for c in ":(#@"):
             continue
-        # Corporate entity names and descriptors are logos/letterheads, not document
-        # titles.  Covers abbreviations and "Limited Liability Company" in full.
-        if re.search(r'\b(LLC|INC|CORP|LTD|INCORPORATED|LIMITED\s+LIABILITY\s+COMPANY)\b', text, re.IGNORECASE):
+        # Corporate entity abbreviations are logos/letterheads, not document titles.
+        if re.search(r'\b(LLC|INC|CORP|LTD|INCORPORATED)\b', text, re.IGNORECASE):
             continue
         # Address lines: house number as first token (entire token all-digits), or
         # first character of first token is a digit (e.g. "6DATE"), or trailing
-        # street suffix.
+        # street/entity suffix.  The entity-type last-word set covers strings like
+        # "Limited Liability Company", "S Corporation", "General Partnership" — all
+        # of which are entity descriptors or checkbox options, not document headings.
+        # "Only" at the end marks option labels ("Card Only", "Cash Only").
         if words[0].isdigit() or words[0][0].isdigit():
             continue
         if words[-1].upper().rstrip('.') in {
             'BLVD', 'BOULEVARD', 'AVE', 'AVENUE', 'STREET', 'ROAD',
             'LANE', 'HWY', 'HIGHWAY', 'PKWY', 'PARKWAY',
+            'COMPANY', 'CORPORATION', 'PARTNERSHIP', 'ORGANIZATION',
+            'ENTITY', 'ASSOCIATION', 'TRUST', 'FOUNDATION',
+            'ONLY',
         }:
             continue
         # Strings with 7+ digits are addresses, phone numbers, or VINs — not titles.
