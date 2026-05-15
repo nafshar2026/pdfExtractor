@@ -1456,6 +1456,8 @@ def split_pdf(
 
             # Stream dedup + writes as groups are emitted so outputs appear
             # progressively; avoid holding all groups/signals until the end.
+            import fitz as _fitz_stream
+            fitz_doc = _fitz_stream.open(str(path))
             import hashlib
 
             def group_hash(group):
@@ -1473,6 +1475,8 @@ def split_pdf(
             hash_to_groups = {}
             semantic_to_groups: dict[str, list[tuple[int, list[int]]]] = {}
             semantic_dedup_hits: list[tuple[int, int, str]] = []
+            seen_phashes: dict[int, tuple[int, str, int]] = {}
+            phash_hits: list[tuple[int, int, int, str, str, int, int]] = []
 
             used_names: dict[str, int] = {}
             written: list[Path] = []
@@ -1519,6 +1523,13 @@ def split_pdf(
                 print(f"[{len(written)}] -> {dest.name}", flush=True)
                 emitted_any = True
                 first_group_fallback = None  # no longer needed once at least one group is written
+                ph = _perceptual_hash(fitz_doc, group[0])
+                if ph is not None:
+                    for stored_hash, (stored_idx, stored_title, stored_page) in seen_phashes.items():
+                        dist = _hamming_distance(ph, stored_hash)
+                        if dist <= _PHASH_THRESHOLD:
+                            phash_hits.append((stored_idx, group_idx, dist, stored_title, title or "", stored_page, group[0] + 1))
+                    seen_phashes[ph] = (group_idx, title or "", group[0] + 1)
                 gc.collect()
 
             # If no group passed dedup, forcibly write the first group seen as a fallback
@@ -1544,6 +1555,7 @@ def split_pdf(
                         f"groups {first_idx} and {dup_idx} via key {semantic_key[:40]}..."
                     )
 
+            _write_phash_report(phash_hits, out_dir, path)
             return written
 
         else:
