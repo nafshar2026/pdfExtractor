@@ -18,12 +18,7 @@ WORKDIR /app
 # Install Python package (separate COPY so pip layer is cached when only src changes)
 COPY pyproject.toml .
 COPY src/ src/
-# cffi 2.0 breaks PaddlePaddle 2.6.2 at the C extension level — pin to 1.x.
-RUN pip install --no-cache-dir "cffi<2" && pip install --no-cache-dir .
-
-# Pre-download PaddleOCR models so they are baked into the image layer.
-# Eliminates the 3-4 minute cold-start model download on every job execution.
-RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=False, lang='en', show_log=False)"
+RUN pip install --no-cache-dir .
 
 # OCR reliability settings validated against large scanned PDFs on constrained Azure SKUs.
 # ISOLATED runs PaddleOCR in a subprocess to prevent OOM in the main process.
