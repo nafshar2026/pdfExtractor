@@ -327,7 +327,8 @@ def test_write_image_group_duplicate_name_gets_suffix(tmp_path):
 
 
 from unittest.mock import patch, MagicMock
-from pdf_extractor.image_splitter import _analyze_text_page, _extract_text_title
+from pdf_extractor.image_splitter import _analyze_text_page
+from pdf_extractor.title_detection import _extract_text_title
 
 
 def test_split_pdf_groups_signals_into_documents(tmp_path):
