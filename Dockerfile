@@ -18,7 +18,8 @@ WORKDIR /app
 # Install Python package (separate COPY so pip layer is cached when only src changes)
 COPY pyproject.toml .
 COPY src/ src/
-RUN pip install --no-cache-dir .
+# cffi 2.0 breaks PaddlePaddle 2.6.2 at the C extension level — pin to 1.x.
+RUN pip install --no-cache-dir "cffi<2" && pip install --no-cache-dir .
 
 # Pre-download PaddleOCR models so they are baked into the image layer.
 # Eliminates the 3-4 minute cold-start model download on every job execution.
