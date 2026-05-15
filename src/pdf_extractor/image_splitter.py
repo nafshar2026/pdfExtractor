@@ -420,8 +420,6 @@ def split_pdf(
 
             # Stream dedup + writes as groups are emitted so outputs appear
             # progressively; avoid holding all groups/signals until the end.
-            import fitz as _fitz_stream
-            fitz_doc = _fitz_stream.open(str(path))
 
             def group_hash(group):
                 writer = PdfWriter()
@@ -432,6 +430,22 @@ def split_pdf(
                 h = hashlib.sha256(buf.getvalue()).hexdigest()
                 del writer, buf
                 return h
+
+            def _chunk_phash(global_idx: int) -> "int | None":
+                # Open only the small chunk PDF that contains this page — never
+                # the full source document — so memory stays bounded per chunk.
+                import fitz as _fitz_chunk
+                for c_idx, (start, end) in enumerate(chunks):
+                    if start <= global_idx < end:
+                        try:
+                            doc = _fitz_chunk.open(str(chunk_paths[c_idx]))
+                            try:
+                                return _perceptual_hash(doc, global_idx - start)
+                            finally:
+                                doc.close()
+                        except Exception:
+                            return None
+                return None
 
             seen_hashes = set()
             seen_semantic_keys: set[str] = set()
@@ -486,7 +500,7 @@ def split_pdf(
                 print(f"[{len(written)}] -> {dest.name}", flush=True)
                 emitted_any = True
                 first_group_fallback = None  # no longer needed once at least one group is written
-                ph = _perceptual_hash(fitz_doc, group[0])
+                ph = _chunk_phash(group[0])
                 if ph is not None:
                     for stored_hash, (stored_idx, stored_title, stored_page) in seen_phashes.items():
                         dist = _hamming_distance(ph, stored_hash)
