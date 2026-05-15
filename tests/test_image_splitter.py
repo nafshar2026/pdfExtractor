@@ -1,6 +1,7 @@
 """Tests for image-based PDF splitting via PaddleOCR title detection."""
 
-from pdf_extractor.image_splitter import PageSignal, _extract_ocr_texts, _windowed_groups_from_signals
+from pdf_extractor.image_splitter import _windowed_groups_from_signals
+from pdf_extractor.page_analysis import PageSignal, _extract_ocr_texts
 
 
 def test_page_signal_new_doc():
@@ -40,7 +41,7 @@ def test_extract_ocr_texts_none_inner():
 
 from unittest.mock import MagicMock, patch
 from PIL import Image as PILImage
-from pdf_extractor.image_splitter import analyze_page
+from pdf_extractor.page_analysis import analyze_page
 
 
 def _make_ocr_result(texts: list[str], height: int = 30) -> list:
@@ -71,8 +72,8 @@ def _blank_image(width: int = 612, height: int = 792) -> PILImage.Image:
 def test_analyze_page_continuation_detected():
     page = _make_image_page(_blank_image())
     # Bottom strip: "Page 3 of 6" → CONTINUATION, returns before top strip is needed.
-    with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
-        with patch("pdf_extractor.image_splitter._ocr_infer", side_effect=[
+    with patch("pdf_extractor.page_analysis._render_page_fitz", return_value=_blank_image()):
+        with patch("pdf_extractor.page_analysis._ocr_infer", side_effect=[
             _make_ocr_result(["Page 3 of 6"]),   # bottom strip only
         ]):
             sig = analyze_page(page)
@@ -85,8 +86,8 @@ def test_analyze_page_title_detected():
     page = _make_image_page(_blank_image())
     # No pagination → bottom, top, then full-page OCR scans.  Full page returns
     # empty so no pagination found there either; title from top strip wins.
-    with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
-        with patch("pdf_extractor.image_splitter._ocr_infer", side_effect=[
+    with patch("pdf_extractor.page_analysis._render_page_fitz", return_value=_blank_image()):
+        with patch("pdf_extractor.page_analysis._ocr_infer", side_effect=[
             _make_ocr_result([]),                     # bottom strip: no continuation
             _make_ocr_result(["ST-556 State Tax"]),   # top strip: short title
             _make_ocr_result([]),                     # full-page fallback (page_one_total=None)
@@ -102,8 +103,8 @@ def test_analyze_page_ambiguous_long_top_text():
     long_text = "x" * 61
     # No pagination → bottom, top, full-page scan.  Top text is too long; full page
     # also returns nothing → AMBIGUOUS.
-    with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
-        with patch("pdf_extractor.image_splitter._ocr_infer", side_effect=[
+    with patch("pdf_extractor.page_analysis._render_page_fitz", return_value=_blank_image()):
+        with patch("pdf_extractor.page_analysis._ocr_infer", side_effect=[
             _make_ocr_result([]),           # bottom: no continuation
             _make_ocr_result([long_text]),  # top: too long to be a title
             _make_ocr_result([]),           # full-page fallback (page_one_total=None)
@@ -124,8 +125,8 @@ def test_analyze_page_page_1_of_n_with_title():
     """'Page 1 of N' with a detectable title → NEW_DOC carrying total_pages."""
     page = _make_image_page(_blank_image())
     # page_one_total is set from bottom strip → full-page scan is skipped.
-    with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
-        with patch("pdf_extractor.image_splitter._ocr_infer", side_effect=[
+    with patch("pdf_extractor.page_analysis._render_page_fitz", return_value=_blank_image()):
+        with patch("pdf_extractor.page_analysis._ocr_infer", side_effect=[
             _make_ocr_result(["Page 1 of 6"]),    # bottom: page 1 of 6
             _make_ocr_result(["Title Here"]),      # top: title found
         ]):
@@ -140,8 +141,8 @@ def test_analyze_page_page_1_of_n_no_title_is_new_doc():
     """'Page 1 of N' with no detectable title must still be NEW_DOC, not AMBIGUOUS."""
     page = _make_image_page(_blank_image())
     # page_one_total set from bottom → full-page fallback runs when top yields nothing.
-    with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
-        with patch("pdf_extractor.image_splitter._ocr_infer", side_effect=[
+    with patch("pdf_extractor.page_analysis._render_page_fitz", return_value=_blank_image()):
+        with patch("pdf_extractor.page_analysis._ocr_infer", side_effect=[
             _make_ocr_result(["Page 1 of 4"]),  # bottom: page 1 of 4
             _make_ocr_result([]),               # top: nothing usable
             _make_ocr_result([]),               # full-page fallback (page_one_total=4)
@@ -156,8 +157,8 @@ def test_analyze_page_page_1_of_n_no_title_is_new_doc():
 def test_analyze_page_continuation_carries_total():
     """CONTINUATION signal must carry total_pages_in_doc from the footer."""
     page = _make_image_page(_blank_image())
-    with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
-        with patch("pdf_extractor.image_splitter._ocr_infer", side_effect=[
+    with patch("pdf_extractor.page_analysis._render_page_fitz", return_value=_blank_image()):
+        with patch("pdf_extractor.page_analysis._ocr_infer", side_effect=[
             _make_ocr_result(["Page 3 of 6"]),
         ]):
             sig = analyze_page(page)
@@ -327,7 +328,7 @@ def test_write_image_group_duplicate_name_gets_suffix(tmp_path):
 
 
 from unittest.mock import patch, MagicMock
-from pdf_extractor.image_splitter import _analyze_text_page
+from pdf_extractor.page_analysis import _analyze_text_page
 from pdf_extractor.title_detection import _extract_text_title
 
 
