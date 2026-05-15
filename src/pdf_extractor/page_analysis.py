@@ -11,6 +11,8 @@ import numpy as np
 from PIL import Image
 
 from .extractor import _DOC_MARKER_RE, _extract_title, _page_lines
+from concurrent.futures.process import BrokenProcessPool
+
 from .ocr_runtime import OcrRuntime
 from .title_detection import (
     _BOTTOM_STRIP_FRACTION,
@@ -400,4 +402,8 @@ def analyze_page(pdf_page, fitz_doc=None, page_idx: int = 0) -> PageSignal:
     text = (pdf_page.extract_text() or "").strip()
     if len(text) >= _TEXT_PAGE_MIN_CHARS:
         return _analyze_text_page(text, fitz_doc=fitz_doc, page_idx=page_idx)
-    return _analyze_image_page(fitz_doc, page_idx)
+    try:
+        return _analyze_image_page(fitz_doc, page_idx)
+    except BrokenProcessPool:
+        _logger.warning("OCR pool exhausted on page %d after all retries; classifying as AMBIGUOUS", page_idx)
+        return PageSignal(classification="AMBIGUOUS", title_text=None, page_num_in_doc=None)

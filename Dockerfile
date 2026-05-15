@@ -20,6 +20,17 @@ COPY pyproject.toml .
 COPY src/ src/
 RUN pip install --no-cache-dir .
 
+# Pre-download PaddleOCR models so they are baked into the image layer.
+# Eliminates the 3-4 minute cold-start model download on every job execution.
+RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=False, lang='en', show_log=False)"
+
+# OCR reliability settings validated against large scanned PDFs on constrained Azure SKUs.
+# ISOLATED runs PaddleOCR in a subprocess to prevent OOM in the main process.
+ENV PDF_EXTRACTOR_OCR_ISOLATED=1
+ENV PDF_EXTRACTOR_OCR_RECYCLE_CALLS=6
+ENV PDF_EXTRACTOR_OCR_POOL_RETRIES=2
+ENV PDF_EXTRACTOR_OCR_MAX_WIDTH=800
+
 # AZURE_STORAGE_CONNECTION_STRING, AZURE_INPUT_CONTAINER, AZURE_OUTPUT_CONTAINER
 # are injected by Azure Container Apps at runtime — no .env file needed in the image.
 
