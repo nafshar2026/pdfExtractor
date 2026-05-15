@@ -1,6 +1,7 @@
 """Deduplication helpers: byte hash, semantic key, perceptual hash, and report writer."""
 from __future__ import annotations
 
+import datetime
 import re
 from pathlib import Path
 
@@ -30,7 +31,8 @@ def _perceptual_hash(fitz_doc, page_idx: int) -> int | None:
         if w_pt <= 0:
             return None
         scale = 64 / w_pt
-        mat = __import__("fitz").Matrix(scale, scale)
+        import fitz as _fitz
+        mat = _fitz.Matrix(scale, scale)
         pix = page.get_pixmap(matrix=mat, alpha=False)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         del pix
@@ -102,7 +104,6 @@ def _write_phash_report(
     """Print suspected-duplicate pairs to console and write suspected_duplicates.txt."""
     if not phash_hits:
         return
-    import datetime
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     header = f"Suspected duplicates in {source_path.name} — {timestamp}"
     hit_lines = [
