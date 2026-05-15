@@ -16,7 +16,6 @@ from .title_detection import (
     _BOTTOM_STRIP_FRACTION,
     _TOP_STRIP_FRACTION,
     _extract_text_title,
-    _extract_text_title_with_layout,
     _infer_content_title,
     _looks_like_form_code_title,
     _select_best_title,

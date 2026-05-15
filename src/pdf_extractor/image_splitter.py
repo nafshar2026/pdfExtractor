@@ -13,9 +13,6 @@ from pathlib import Path
 from PIL import Image
 from pypdf import PdfReader, PdfWriter
 
-from .extractor import (
-    _sanitize_filename,
-)
 from .title_detection import (
     _title_key,
 )
@@ -23,8 +20,6 @@ from .page_analysis import (
     PageSignal,
     analyze_page,
     _shutdown_ocr_pool,
-    _analyze_text_page,
-    _analyze_image_page,
 )
 from .overlap_splitter import (
     analyze_chunk_file_signals,
