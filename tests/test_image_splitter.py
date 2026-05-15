@@ -822,7 +822,7 @@ def test_cli_split_documents_calls_split_pdf(tmp_path, monkeypatch):
 
 
 from pathlib import Path
-from pdf_extractor.image_splitter import (
+from pdf_extractor.dedup import (
     _hamming_distance,
     _perceptual_hash,
     _PHASH_THRESHOLD,
@@ -911,7 +911,7 @@ def test_phash_threshold_value():
     assert _PHASH_THRESHOLD == 10
 
 
-from pdf_extractor.image_splitter import _write_phash_report
+from pdf_extractor.dedup import _write_phash_report
 
 
 def test_write_phash_report_no_hits_silent(tmp_path, capsys):
