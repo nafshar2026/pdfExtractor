@@ -53,25 +53,39 @@ class OcrRuntime:
             self._ocr_pool = None
         self._ocr_pool_calls = 0
 
-    def infer(self, image_array: np.ndarray):
-        """Run OCR either in-process or in an isolated subprocess worker."""
-        if not self._isolated:
-            return self._get_ocr().ocr(image_array)
-
-        arr = np.ascontiguousarray(image_array)
-
+    def _isolated_infer(self, arr: np.ndarray):
+        """Single isolated-subprocess OCR attempt; raises on BrokenProcessPool."""
         attempts = self._pool_retries + 1
         for attempt in range(attempts):
             try:
                 pool = self._get_ocr_pool()
                 result = pool.submit(_worker_run_ocr, arr).result()
                 self._ocr_pool_calls += 1
-
                 if self._recycle_calls > 0 and self._ocr_pool_calls >= self._recycle_calls:
                     self.shutdown()
-
                 return result
             except BrokenProcessPool:
                 self.shutdown()
                 if attempt >= attempts - 1:
                     raise
+
+    def infer(self, image_array: np.ndarray):
+        """Run OCR either in-process or in an isolated subprocess worker.
+
+        In isolated mode, an empty result on the first call after a worker
+        recycle (model warm-up) is retried once automatically so that callers
+        never receive a silent empty response for a non-blank image strip.
+        """
+        if not self._isolated:
+            return self._get_ocr().ocr(image_array)
+
+        arr = np.ascontiguousarray(image_array)
+        result = self._isolated_infer(arr)
+
+        # Empty result right after worker recycle: the new worker spent its first
+        # call loading the model and returned nothing. Retry once — the worker is
+        # now warmed up and will produce real output.
+        if result is None or not result or not result[0]:
+            result = self._isolated_infer(arr)
+
+        return result

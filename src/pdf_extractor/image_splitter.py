@@ -307,11 +307,13 @@ def _filter_layout_noise_for_title(ocr_result: list | None) -> list | None:
     return [filtered_lines]
 
 
-# Minimum score (box_height × word-count multiplier) a candidate must reach to be
-# accepted as a document title.  Candidates below this threshold are treated as
-# column headers or field labels, and the page is classified as AMBIGUOUS so it
-# merges with the previous document group instead of starting a new one.
-_MIN_TITLE_SCORE = 50.0
+# Minimum score thresholds.  Single-word candidates (multiplier=0.3) are held to a
+# high bar so that logos and column headers don't qualify.  Multi-word candidates
+# (multiplier=2.0) have already passed strict content filters (length, digit count,
+# lowercase runs, corporate suffixes, address patterns) so a lower threshold is safe
+# and catches small-print form titles that render at modest box heights.
+_MIN_TITLE_SCORE = 50.0        # single-word
+_MIN_TITLE_SCORE_MULTI = 20.0  # two or more words
 
 
 def _looks_like_form_code_title(text: str) -> bool:
@@ -409,6 +411,7 @@ def _select_best_title(ocr_result: list | None, *, footer_texts: list[str] | Non
 
     best_text: str | None = None
     best_score: float = 0.0
+    best_n: int = 0
 
     for line in ocr_result[0]:
         if not line or len(line) < 2 or not line[1]:
@@ -424,6 +427,20 @@ def _select_best_title(ocr_result: list | None, *, footer_texts: list[str] | Non
         # Field labels, form numbers with metadata, addresses
         if any(c in text for c in ":(#@"):
             continue
+        # Corporate entity names and descriptors are logos/letterheads, not document
+        # titles.  Covers abbreviations and "Limited Liability Company" in full.
+        if re.search(r'\b(LLC|INC|CORP|LTD|INCORPORATED|LIMITED\s+LIABILITY\s+COMPANY)\b', text, re.IGNORECASE):
+            continue
+        # Address lines: house number as first token (entire token all-digits), or
+        # first character of first token is a digit (e.g. "6DATE"), or trailing
+        # street suffix.
+        if words[0].isdigit() or words[0][0].isdigit():
+            continue
+        if words[-1].upper().rstrip('.') in {
+            'BLVD', 'BOULEVARD', 'AVE', 'AVENUE', 'STREET', 'ROAD',
+            'LANE', 'HWY', 'HIGHWAY', 'PKWY', 'PARKWAY',
+        }:
+            continue
         # Strings with 7+ digits are addresses, phone numbers, or VINs — not titles.
         # Threshold is deliberately high so form numbers (ST-556, DEAL 321130, DT 523)
         # survive; phone numbers (847-882-8400 = 10d) and zip+4 strings do not.
@@ -436,6 +453,11 @@ def _select_best_title(ocr_result: list | None, *, footer_texts: list[str] | Non
         # codns").  Genuine titles are headed or all-caps; reject candidates with
         # 2+ all-lowercase words of length > 2.
         if sum(1 for w in words if w.islower() and len(w) > 2) >= 2:
+            continue
+        # Document titles always have at least one word starting with an upper-case
+        # letter.  Phrases like "a check" that are entirely uncapitalized are field
+        # values or checkbox labels, not document titles.
+        if not any(w and w[0].isupper() for w in words):
             continue
 
         try:
@@ -456,11 +478,14 @@ def _select_best_title(ocr_result: list | None, *, footer_texts: list[str] | Non
         score = bh * multiplier * width_bonus * top_bonus
 
         if score > best_score:
-            best_score, best_text = score, text
+            best_score, best_text, best_n = score, text, n
 
+    # Multi-word candidates cleared strong content filters; they qualify at a lower
+    # score threshold than single-word candidates (logos/column headers).
+    threshold = _MIN_TITLE_SCORE_MULTI if best_n >= 2 else _MIN_TITLE_SCORE
     # If every surviving candidate is a weak column header or form-field label,
     # treat the page as untitled so it merges with the previous document.
-    return _normalize_detected_title(best_text) if best_score >= _MIN_TITLE_SCORE and best_text else None
+    return _normalize_detected_title(best_text) if best_score >= threshold and best_text else None
 
 
 _logger = logging.getLogger(__name__)
@@ -898,6 +923,29 @@ def _analyze_image_page(fitz_doc, page_idx: int) -> PageSignal:
             del full_arr
         if _title_appears_top_and_footer(full_result, best_title):
             best_title = None
+
+    # Fallback: "Page 1 of N" confirmed but top-strip OCR missed the title
+    # (common when the worker recycles mid-chunk). Re-scan the full page and
+    # restrict to the top 35% by bounding-box centre-Y before title detection.
+    if best_title is None and page_one_total is not None:
+        if full_result is None:
+            full_arr = np.array(pil_image)
+            full_result = _ocr_infer(full_arr)
+            del full_arr
+        if full_result and full_result[0]:
+            ph = max(
+                (float(max(pt[1] for pt in line[0]))
+                 for line in full_result[0]
+                 if line and len(line) >= 2 and line[0]),
+                default=1.0,
+            )
+            top_band = [
+                line for line in full_result[0]
+                if line and len(line) >= 2 and line[0]
+                and (float(sum(pt[1] for pt in line[0])) / len(line[0])) <= ph * 0.35
+            ]
+            if top_band:
+                best_title = _select_best_title([top_band], footer_texts=footer_texts_for_title)
 
     del pil_image
     del bottom_result, top_result
@@ -1406,6 +1454,7 @@ def split_pdf(
 
                 dest = _write_image_group(reader, group, group_signals, out_dir, used_names)
                 written.append(dest)
+                print(f"[{len(written)}] -> {dest.name}", flush=True)
                 emitted_any = True
                 first_group_fallback = None  # no longer needed once at least one group is written
                 gc.collect()
@@ -1415,6 +1464,7 @@ def split_pdf(
                 group, group_signals = first_group_fallback
                 dest = _write_image_group(reader, group, group_signals, out_dir, used_names)
                 written.append(dest)
+                print(f"[{len(written)}] -> {dest.name}", flush=True)
                 if verbose:
                     print("\n--- PATCH: No groups emitted, wrote fallback output from first chunk ---")
 
@@ -1539,5 +1589,6 @@ def split_pdf(
     for group in deduped_groups:
         dest = _write_image_group(reader, group, signals_dict, out_dir, used_names)
         written.append(dest)
+        print(f"[{len(written)}] -> {dest.name}", flush=True)
 
     return written

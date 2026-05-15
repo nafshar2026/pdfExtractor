@@ -70,14 +70,11 @@ def _blank_image(width: int = 612, height: int = 792) -> PILImage.Image:
 
 def test_analyze_page_continuation_detected():
     page = _make_image_page(_blank_image())
-    # Bottom strip: "Page 3 of 6"; top strip: short title text
-    mock_ocr = MagicMock()
-    mock_ocr.ocr.side_effect = [
-        _make_ocr_result(["Page 3 of 6"]),   # bottom strip
-        _make_ocr_result(["Some Title"]),     # top strip (not reached, continuation wins)
-    ]
+    # Bottom strip: "Page 3 of 6" → CONTINUATION, returns before top strip is needed.
     with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
-        with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
+        with patch("pdf_extractor.image_splitter._ocr_infer", side_effect=[
+            _make_ocr_result(["Page 3 of 6"]),   # bottom strip only
+        ]):
             sig = analyze_page(page)
     assert sig.classification == "CONTINUATION"
     assert sig.page_num_in_doc == 3
@@ -86,29 +83,31 @@ def test_analyze_page_continuation_detected():
 
 def test_analyze_page_title_detected():
     page = _make_image_page(_blank_image())
-    mock_ocr = MagicMock()
-    mock_ocr.ocr.side_effect = [
-        _make_ocr_result([]),                     # bottom strip: no continuation
-        _make_ocr_result(["ST-556 State Tax"]),   # top strip: short title
-    ]
+    # No pagination → bottom, top, then full-page OCR scans.  Full page returns
+    # empty so no pagination found there either; title from top strip wins.
     with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
-        with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
+        with patch("pdf_extractor.image_splitter._ocr_infer", side_effect=[
+            _make_ocr_result([]),                     # bottom strip: no continuation
+            _make_ocr_result(["ST-556 State Tax"]),   # top strip: short title
+            _make_ocr_result([]),                     # full-page fallback (page_one_total=None)
+        ]):
             sig = analyze_page(page)
     assert sig.classification == "NEW_DOC"
-    assert sig.title_text == "ST-556 State Tax"
+    assert sig.title_text == "State Tax"  # "ST-556" prefix stripped by _normalize_detected_title
     assert sig.page_num_in_doc is None
 
 
 def test_analyze_page_ambiguous_long_top_text():
     page = _make_image_page(_blank_image())
     long_text = "x" * 61
-    mock_ocr = MagicMock()
-    mock_ocr.ocr.side_effect = [
-        _make_ocr_result([]),           # bottom: no continuation
-        _make_ocr_result([long_text]),  # top: too long to be a title
-    ]
+    # No pagination → bottom, top, full-page scan.  Top text is too long; full page
+    # also returns nothing → AMBIGUOUS.
     with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
-        with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
+        with patch("pdf_extractor.image_splitter._ocr_infer", side_effect=[
+            _make_ocr_result([]),           # bottom: no continuation
+            _make_ocr_result([long_text]),  # top: too long to be a title
+            _make_ocr_result([]),           # full-page fallback (page_one_total=None)
+        ]):
             sig = analyze_page(page)
     assert sig.classification == "AMBIGUOUS"
 
@@ -124,13 +123,12 @@ def test_analyze_page_no_images():
 def test_analyze_page_page_1_of_n_with_title():
     """'Page 1 of N' with a detectable title → NEW_DOC carrying total_pages."""
     page = _make_image_page(_blank_image())
-    mock_ocr = MagicMock()
-    mock_ocr.ocr.side_effect = [
-        _make_ocr_result(["Page 1 of 6"]),    # bottom: page 1 of 6
-        _make_ocr_result(["Title Here"]),      # top: title found
-    ]
+    # page_one_total is set from bottom strip → full-page scan is skipped.
     with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
-        with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
+        with patch("pdf_extractor.image_splitter._ocr_infer", side_effect=[
+            _make_ocr_result(["Page 1 of 6"]),    # bottom: page 1 of 6
+            _make_ocr_result(["Title Here"]),      # top: title found
+        ]):
             sig = analyze_page(page)
     assert sig.classification == "NEW_DOC"
     assert sig.title_text == "Title Here"
@@ -141,13 +139,13 @@ def test_analyze_page_page_1_of_n_with_title():
 def test_analyze_page_page_1_of_n_no_title_is_new_doc():
     """'Page 1 of N' with no detectable title must still be NEW_DOC, not AMBIGUOUS."""
     page = _make_image_page(_blank_image())
-    mock_ocr = MagicMock()
-    mock_ocr.ocr.side_effect = [
-        _make_ocr_result(["Page 1 of 4"]),  # bottom: page 1 of 4
-        _make_ocr_result([]),               # top: nothing usable
-    ]
+    # page_one_total set from bottom → full-page fallback runs when top yields nothing.
     with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
-        with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
+        with patch("pdf_extractor.image_splitter._ocr_infer", side_effect=[
+            _make_ocr_result(["Page 1 of 4"]),  # bottom: page 1 of 4
+            _make_ocr_result([]),               # top: nothing usable
+            _make_ocr_result([]),               # full-page fallback (page_one_total=4)
+        ]):
             sig = analyze_page(page)
     assert sig.classification == "NEW_DOC"
     assert sig.title_text is None
@@ -158,12 +156,10 @@ def test_analyze_page_page_1_of_n_no_title_is_new_doc():
 def test_analyze_page_continuation_carries_total():
     """CONTINUATION signal must carry total_pages_in_doc from the footer."""
     page = _make_image_page(_blank_image())
-    mock_ocr = MagicMock()
-    mock_ocr.ocr.side_effect = [
-        _make_ocr_result(["Page 3 of 6"]),
-    ]
     with patch("pdf_extractor.image_splitter._render_page_fitz", return_value=_blank_image()):
-        with patch("pdf_extractor.image_splitter._get_ocr", return_value=mock_ocr):
+        with patch("pdf_extractor.image_splitter._ocr_infer", side_effect=[
+            _make_ocr_result(["Page 3 of 6"]),
+        ]):
             sig = analyze_page(page)
     assert sig.classification == "CONTINUATION"
     assert sig.page_num_in_doc == 3
@@ -409,7 +405,9 @@ def test_analyze_text_page_continuation_page_num_in_header():
 
 def test_analyze_text_page_allcaps_title_no_markers_is_new_doc():
     """ALL-CAPS title with no page markers → NEW_DOC."""
-    text = "FORM NO. LAWIL-RATECAP (Rev. 8/22)\nThe information on this form is part of your contract.\nDISCLOSURE OF 36% RATE CAP\nFurther content of the disclosure form goes here."
+    # Pad to > 8 body lines so footer detection does not swallow the title.
+    body = "\n".join(["body text for the form"] * 10)
+    text = f"FORM NO. LAWIL-RATECAP (Rev. 8/22)\nThe information on this form is part of your contract.\nDISCLOSURE OF 36% RATE CAP\nFurther content of the disclosure form goes here.\n{body}"
     sig = _analyze_text_page(text)
     assert sig.classification == "NEW_DOC"
     assert "DISCLOSURE" in (sig.title_text or "")
@@ -472,21 +470,26 @@ def test_extract_text_title_filters_non_ascii():
 
 def test_extract_text_title_first_wins_by_default():
     """Without prefer_last, the first qualifying candidate is returned."""
-    lines = ["ODOMETER DISCLOSURE STATEMENT", "WARNING ODOMETER DISCREPENCY"]
+    # Pad to > 8 body lines so the footer-detection window doesn't absorb the title.
+    body = ["body text line"] * 10
+    lines = ["ODOMETER DISCLOSURE STATEMENT", "WARNING ODOMETER DISCREPENCY"] + body
     assert _extract_text_title(lines) == "ODOMETER DISCLOSURE STATEMENT"
 
 
 def test_extract_text_title_prefer_last_picks_later():
     """prefer_last=True skips earlier candidates in favour of later ones."""
-    lines = ["FEDERAL TRUTH IN LENDING DISCLOSURES", "RETAIL INSTALLMENT CONTRACT"]
+    body = ["body text line"] * 10
+    lines = ["FEDERAL TRUTH IN LENDING DISCLOSURES", "RETAIL INSTALLMENT CONTRACT"] + body
     assert _extract_text_title(lines, prefer_last=True) == "RETAIL INSTALLMENT CONTRACT"
 
 
 def test_extract_text_title_title_case_fallback():
     """Title Case titles are detected when no ALL-CAPS title is present."""
     # Simulates a RouteOne credit application page: logo line filtered by non-ASCII,
-    # then "Credit Application" in Title Case on line 2.
-    lines = ["RouteOne®", "Credit Application", "[X] You are applying for individual credit"]
+    # then "Credit Application" in Title Case on line 2.  Body padding keeps the
+    # footer-detection window from absorbing the title line.
+    body = ["body text line"] * 10
+    lines = ["RouteOne®", "Credit Application", "[X] You are applying for individual credit"] + body
     assert _extract_text_title(lines) == "Credit Application"
 
 
@@ -710,8 +713,9 @@ def test_split_pdf_routes_image_pages_through_analyze(tmp_path):
     """Blank pages (no text) must route through analyze_page, not text splitter."""
     source = tmp_path / "source.pdf"
     writer = PdfWriter()
+    # Different page sizes so hash-based dedup does not collapse the two groups.
     writer.add_blank_page(width=612, height=792)
-    writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=612, height=900)
     with source.open("wb") as f:
         writer.write(f)
     out_dir = tmp_path / "out"

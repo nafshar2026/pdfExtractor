@@ -280,9 +280,7 @@ def main() -> int:
     if args.split_documents:
         if len(pdf_files) != 1:
             parser.error("--split-documents requires exactly one input PDF.")
-        written_files = split_pdf(pdf_files[0], args.split_output_dir, verbose=args.verbose)
-        for idx, written_file in enumerate(written_files, start=1):
-            print(f"[{idx}] -> {written_file.name}")
+        split_pdf(pdf_files[0], args.split_output_dir, verbose=args.verbose)
         return 0
 
     output_dir = Path(args.output_dir)
