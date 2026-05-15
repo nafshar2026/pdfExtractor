@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import io
 import os
 import re
@@ -421,7 +422,6 @@ def split_pdf(
             # progressively; avoid holding all groups/signals until the end.
             import fitz as _fitz_stream
             fitz_doc = _fitz_stream.open(str(path))
-            import hashlib
 
             def group_hash(group):
                 writer = PdfWriter()
@@ -505,7 +505,7 @@ def split_pdf(
                     print("\n--- PATCH: No groups emitted, wrote fallback output from first chunk ---")
 
             if verbose:
-                print(f"\n--- DEDUPLICATION REPORT ---")
+                print("\n--- DEDUPLICATION REPORT ---")
                 print(f"Groups before dedup: {groups_before_dedup}")
                 print(f"Groups after dedup: {len(written)}")
                 print(f"Unique hashes: {len(seen_hashes)}")
@@ -561,8 +561,6 @@ def split_pdf(
             print(f"  Chunk {idx}: {len(chunk)} group(s), {pages} page(s)")
 
     # Hash-based deduplication across the whole file (not only back-to-back groups).
-    import hashlib
-
     def group_hash(group):
         writer = PdfWriter()
         for idx in group:
