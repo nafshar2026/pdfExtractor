@@ -1642,7 +1642,24 @@ def split_pdf(
             seen_hashes.add(h)
             if semantic_key is not None:
                 seen_semantic_keys.add(semantic_key)
-    
+
+    import fitz as _fitz_ph
+    seen_phashes: dict[int, tuple[int, str, int]] = {}
+    phash_hits: list[tuple[int, int, int, str, str, int, int]] = []
+    _phash_fitz = _fitz_ph.open(str(path))
+    try:
+        for i, group in enumerate(deduped_groups):
+            title = _group_primary_title(group, signals_dict)
+            ph = _perceptual_hash(_phash_fitz, group[0])
+            if ph is not None:
+                for stored_hash, (stored_idx, stored_title, stored_page) in seen_phashes.items():
+                    dist = _hamming_distance(ph, stored_hash)
+                    if dist <= _PHASH_THRESHOLD:
+                        phash_hits.append((stored_idx, i, dist, stored_title, title or "", stored_page, group[0] + 1))
+                seen_phashes[ph] = (i, title or "", group[0] + 1)
+    finally:
+        _phash_fitz.close()
+
     if verbose:
         print(f"\n--- DEDUPLICATION REPORT ---")
         print(f"Groups before dedup: {len(flat_groups)}")
@@ -1665,4 +1682,5 @@ def split_pdf(
         written.append(dest)
         print(f"[{len(written)}] -> {dest.name}", flush=True)
 
+    _write_phash_report(phash_hits, out_dir, path)
     return written
