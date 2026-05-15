@@ -1648,15 +1648,15 @@ def split_pdf(
     phash_hits: list[tuple[int, int, int, str, str, int, int]] = []
     _phash_fitz = _fitz_ph.open(str(path))
     try:
-        for i, group in enumerate(deduped_groups):
+        for deduped_idx, group in enumerate(deduped_groups):
             title = _group_primary_title(group, signals_dict)
             ph = _perceptual_hash(_phash_fitz, group[0])
             if ph is not None:
                 for stored_hash, (stored_idx, stored_title, stored_page) in seen_phashes.items():
                     dist = _hamming_distance(ph, stored_hash)
                     if dist <= _PHASH_THRESHOLD:
-                        phash_hits.append((stored_idx, i, dist, stored_title, title or "", stored_page, group[0] + 1))
-                seen_phashes[ph] = (i, title or "", group[0] + 1)
+                        phash_hits.append((stored_idx, deduped_idx, dist, stored_title, title or "", stored_page, group[0] + 1))
+                seen_phashes[ph] = (deduped_idx, title or "", group[0] + 1)
     finally:
         _phash_fitz.close()
 
