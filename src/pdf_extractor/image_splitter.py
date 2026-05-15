@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import gc
 import io
-import logging
 import os
 import re
 import shutil
