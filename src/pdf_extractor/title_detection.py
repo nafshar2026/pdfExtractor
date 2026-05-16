@@ -276,6 +276,11 @@ def _select_best_title(ocr_result: list | None, *, footer_texts: list[str] | Non
         # "Only" at the end marks option labels ("Card Only", "Cash Only").
         if words[0].isdigit() or words[0][0].isdigit():
             continue
+        # Address lines where the house number appears anywhere — as a standalone token
+        # ("ADDRESS 2948 GREENBRIAR") or merged by OCR ("Address2948 GREENBRIAR").
+        # Any word containing a run of ≥2 consecutive digits signals an address or form code.
+        if any(re.search(r'\d{2,}(?![%\w])', w) for w in words):
+            continue
         if words[-1].upper().rstrip('.') in {
             'BLVD', 'BOULEVARD', 'AVE', 'AVENUE', 'STREET', 'ROAD',
             'LANE', 'HWY', 'HIGHWAY', 'PKWY', 'PARKWAY',
@@ -293,9 +298,17 @@ def _select_best_title(ocr_result: list | None, *, footer_texts: list[str] | Non
         if n > 8:
             continue
         # Garbled OCR produces runs of all-lowercase words (e.g. "se nag tor stot
-        # codns").  Genuine titles are headed or all-caps; reject candidates with
-        # 2+ all-lowercase words of length > 2.
-        if sum(1 for w in words if w.islower() and len(w) > 2) >= 2:
+        # codns") AND starts with a lowercase first word.  Title Case titles
+        # (e.g. "Application for Texas Title and/or Registration") start with an
+        # uppercase word and legitimately contain lowercase function words — only
+        # apply the garbled-text filter when the first word is itself lowercase.
+        if words[0][0].islower() and sum(1 for w in words if w.islower() and len(w) > 2) >= 2:
+            continue
+        # OCR sometimes concatenates adjacent form-field labels into one token with
+        # embedded CamelCase (e.g. "DescriptionAdd", "LienOther").  Real words in
+        # document titles don't carry an uppercase letter past the first character
+        # unless the entire word is uppercase (ALL-CAPS).
+        if any(len(w) > 4 and not w.isupper() and any(c.isupper() for c in w[1:]) for w in words):
             continue
         # Document titles always have at least one word starting with an upper-case
         # letter.  Phrases like "a check" that are entirely uncapitalized are field
@@ -440,6 +453,11 @@ def _extract_text_title(
             continue
         # Address lines start with a house number (all-digit first token).
         if words[0].isdigit():
+            continue
+        # Address lines where the house number appears anywhere — standalone ("ADDRESS 2948
+        # GREENBRIAR") or merged by OCR ("Address2948 GREENBRIAR"). Any word containing a
+        # run of ≥2 consecutive digits signals an address or form code.
+        if any(re.search(r'\d{2,}(?![%\w])', w) for w in words):
             continue
         # Must have at least one word with ≥3 alphabetic characters (rules out "DT 5/23").
         if not any(sum(c.isalpha() for c in w) >= 3 for w in words):
