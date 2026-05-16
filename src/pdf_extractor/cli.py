@@ -136,8 +136,12 @@ def _write_output(document: ExtractedDocument, output_dir: Path, output_format: 
     return destination
 
 
-def _run_azure_split(blob_name: str, *, verbose: bool = False) -> list[dict]:
+def _run_azure_split(blob_name: str, *, batch_id: str, verbose: bool = False) -> list[dict]:
     """Download one blob, split it, upload the results, and return opt-in data.
+
+    Split PDFs are uploaded under ``{batch_id}/{source_stem}/`` so every file
+    in a batch shares one top-level folder, and the Excel written at the end of
+    the batch can reference the same ``batch_id``.
 
     Requires ``AZURE_STORAGE_CONNECTION_STRING`` in the environment (loaded from
     ``.env`` via python-dotenv before this function is called).
@@ -165,7 +169,7 @@ def _run_azure_split(blob_name: str, *, verbose: bool = False) -> list[dict]:
         print(f"Uploading {len(written_files)} file(s) …")
         stem = Path(blob_name).stem
         for idx, written_file in enumerate(written_files, start=1):
-            dest_blob = f"{stem}/{written_file.name}"
+            dest_blob = f"{batch_id}/{stem}/{written_file.name}"
             upload_blob(written_file, dest_blob)
             print(f"  [{idx}] -> {dest_blob}")
 
@@ -184,7 +188,7 @@ def _run_azure_split(blob_name: str, *, verbose: bool = False) -> list[dict]:
                         "last_name": None, "first_name": None,
                         "opt_in_status": "error", "telemarketing_phones": [],
                     }
-                data["source_file"] = f"{stem}/{ca.name}"
+                data["source_file"] = f"{batch_id}/{stem}/{ca.name}"
                 opt_in_results.append(data)
 
         return opt_in_results
@@ -249,16 +253,18 @@ def main() -> int:
                 parser.error(f"No PDF blobs matched Azure pattern: {pattern}")
         else:
             blob_names = [pattern]
+        import datetime
+        batch_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        print(f"Batch ID: {batch_id}")
+
         all_opt_in: list[dict] = []
         for blob_name in blob_names:
-            all_opt_in.extend(_run_azure_split(blob_name, verbose=args.verbose))
+            all_opt_in.extend(_run_azure_split(blob_name, batch_id=batch_id, verbose=args.verbose))
 
         if all_opt_in:
-            import datetime
             from .azure_storage import upload_blob
             from .opt_in_extractor import write_results_to_excel
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            xlsx_name = f"opt_in_results_{timestamp}.xlsx"
+            xlsx_name = f"{batch_id}/excel-{batch_id}.xlsx"
             with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
                 excel_path = Path(tmp.name)
             write_results_to_excel(all_opt_in, excel_path)
