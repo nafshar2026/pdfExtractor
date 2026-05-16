@@ -327,11 +327,19 @@ function Invoke-ImageBuild {
 function Invoke-AzureJob([string]$filename) {
     Write-Host ""
     Write-Host "Starting Azure job for: $filename" -ForegroundColor Cyan
-    
+
+    # Set PDF_INPUT_FILE in the job template so the ENTRYPOINT can read it.
+    # Using --set-env-vars on update (not --env-vars on start) is the only reliable
+    # way to inject env vars into the running container via the shell-form ENTRYPOINT.
+    az containerapp job update `
+        --name $JOB_NAME `
+        --resource-group $RESOURCE_GROUP `
+        --set-env-vars "PDF_INPUT_FILE=$filename" `
+        --output none 2>&1 | Out-Null
+
     $execName = az containerapp job start `
         --name $JOB_NAME `
         --resource-group $RESOURCE_GROUP `
-        --env-vars "PDF_INPUT_FILE=$filename" `
         --query name -o tsv
     
     Write-Host "Execution: $execName" -ForegroundColor Yellow
