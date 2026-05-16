@@ -10,6 +10,13 @@ import re
 import shutil
 from pathlib import Path
 
+_PROGRESS = os.environ.get("PDF_EXTRACTOR_NO_PROGRESS_LOGS", "") != "No_Progress_Logs"
+
+
+def _log(msg: str) -> None:
+    if _PROGRESS:
+        print(msg, flush=True)
+
 from pypdf import PdfReader, PdfWriter
 
 from .title_detection import (
@@ -323,12 +330,14 @@ def _write_fixed_chunk_files(
 def _analyze_chunk_file_signals(
     chunk_path: Path,
     abs_start: int,
+    total_pages: int = 0,
 ) -> list[tuple[int, PageSignal]]:
     return analyze_chunk_file_signals(
         chunk_path,
         abs_start,
         analyze_page_fn=analyze_page,
         shutdown_ocr_pool_fn=_shutdown_ocr_pool,
+        total_pages=total_pages,
     )
 
 
@@ -387,6 +396,8 @@ def split_pdf(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     reader = PdfReader(str(path))
+    total_pages = len(reader.pages)
+    _log(f"[START] {path.name} — {total_pages} pages")
 
     fitz_doc = None
 
@@ -397,7 +408,7 @@ def split_pdf(
         overlap_chunk_pages = _OVERLAP_CHUNK_PAGES
 
         if overlap_chunk_pages > 0:
-            chunks = _fixed_page_chunks(len(reader.pages), overlap_chunk_pages)
+            chunks = _fixed_page_chunks(total_pages, overlap_chunk_pages)
 
             # Persist chunk PDFs under the output directory so the source/input
             # location stays untouched and operators can inspect chunk artifacts.
@@ -462,6 +473,8 @@ def split_pdf(
             emitted_any = False
             first_group_fallback: tuple[list[int], dict[int, PageSignal]] | None = None
 
+            _log(f"[CHUNKS] {len(chunks)} chunks of {overlap_chunk_pages} pages — {total_pages} total pages")
+
             for group_idx, (group, group_signals) in enumerate(
                 _iter_windowed_groups_from_chunk_files(chunks, chunk_paths)
             ):
@@ -475,6 +488,7 @@ def split_pdf(
                     first_group_fallback = (group, group_signals)
 
                 if h in seen_hashes:
+                    _log(f"[DEDUP] Skipping duplicate group {group_idx} (pages {group[0]+1}-{group[-1]+1})")
                     continue
 
                 title = _group_primary_title(group, group_signals)
@@ -489,6 +503,7 @@ def split_pdf(
                 if semantic_key is not None and semantic_key in seen_semantic_keys:
                     first_idx = semantic_to_groups[semantic_key][0][0]
                     semantic_dedup_hits.append((first_idx, group_idx, semantic_key))
+                    _log(f"[DEDUP] Skipping semantic duplicate group {group_idx} (pages {group[0]+1}-{group[-1]+1})")
                     continue
 
                 seen_hashes.add(h)
@@ -497,7 +512,7 @@ def split_pdf(
 
                 dest = _write_image_group(reader, group, group_signals, out_dir, used_names)
                 written.append(dest)
-                print(f"[{len(written)}] -> {dest.name}", flush=True)
+                _log(f"[OUTPUT {len(written)}] {dest.name} (pages {group[0]+1}-{group[-1]+1})")
                 emitted_any = True
                 first_group_fallback = None  # no longer needed once at least one group is written
                 ph = _chunk_phash(group[0])
@@ -533,16 +548,19 @@ def split_pdf(
                     )
 
             _write_phash_report(phash_hits, out_dir, path)
+            _log(f"[DONE] {path.name} — {len(written)} documents written")
             return written
 
         else:
             import fitz
             fitz_doc = fitz.open(str(path))
             signals_list: list[tuple[int, PageSignal]] = []
-            for i in range(len(reader.pages)):
+            for i in range(total_pages):
                 signal = analyze_page(reader.pages[i], fitz_doc=fitz_doc, page_idx=i)
                 signals_list.append((i, signal))
                 signals_dict[i] = signal
+                title_str = f" | {signal.title_text}" if signal.title_text else ""
+                _log(f"[PAGE {i + 1}/{total_pages}] {signal.classification}{title_str}")
                 gc.collect()  # release OCR buffers from the processed page
 
             if verbose:

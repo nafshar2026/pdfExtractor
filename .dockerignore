@@ -1,19 +1,39 @@
+# Python
 .venv/
-.git/
-.github/
 __pycache__/
 *.pyc
 *.pyo
-.pytest_cache/
-tests/
-output/
-src/pdf_extractor/Data/
-.env
-.env.*
+*.egg-info/
 dist/
 build/
-*.egg-info/
+.eggs/
+
+# Output / data
+output/
+src/pdf_extractor/Data/
+
+# Dev / IDE
 .vscode/
 .idea/
+*.code-workspace
+
+# OS
 .DS_Store
 Thumbs.db
+
+# Git
+.git/
+
+# Secrets / env
+.env
+.env.*
+local.settings.json
+*.pem
+*.key
+*.pfx
+
+# Docs / misc
+docs/
+*.md
+*.docx
+trial_stats.md

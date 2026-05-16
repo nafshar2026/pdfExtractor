@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import gc
+import os
 from pathlib import Path
 from typing import Any, Callable
 
 from pypdf import PdfReader, PdfWriter
+
+_PROGRESS = os.environ.get("PDF_EXTRACTOR_NO_PROGRESS_LOGS", "") != "No_Progress_Logs"
+
+
+def _log(msg: str) -> None:
+    if _PROGRESS:
+        print(msg, flush=True)
 
 
 def chunk_document_groups(groups: list[list[int]], max_pages: int) -> list[list[list[int]]]:
@@ -136,6 +144,7 @@ def analyze_chunk_file_signals(
     *,
     analyze_page_fn: Callable[..., Any],
     shutdown_ocr_pool_fn: Callable[[], None],
+    total_pages: int = 0,
 ) -> list[tuple[int, Any]]:
     """Analyze one on-disk chunk and return absolute-index page signals."""
     local_reader = PdfReader(str(chunk_path))
@@ -149,6 +158,11 @@ def analyze_chunk_file_signals(
             abs_idx = abs_start + local_idx
             signal = analyze_page_fn(local_reader.pages[local_idx], fitz_doc=local_fitz, page_idx=local_idx)
             chunk_signals.append((abs_idx, signal))
+            total_str = f"/{total_pages}" if total_pages else ""
+            classification = getattr(signal, "classification", signal)
+            title = getattr(signal, "title_text", None)
+            title_str = f" | {title}" if title else ""
+            _log(f"[PAGE {abs_idx + 1}{total_str}] {classification}{title_str}")
             gc.collect()
     finally:
         local_fitz.close()

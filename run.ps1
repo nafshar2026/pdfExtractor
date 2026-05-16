@@ -273,6 +273,27 @@ print(f'Processed {n} credit application(s).')
     return $LASTEXITCODE -eq 0
 }
 
+function Invoke-ImageBuild {
+    # Stage only the files Docker needs so the ACR upload is a few MB, not 800+ MB.
+    # (az acr build uploads the full directory tree before applying .dockerignore, so
+    # running from a minimal staging directory is the only reliable way to keep it small.)
+    $staging = Join-Path $env:TEMP "pdf-extractor-stage"
+    if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
+    New-Item -ItemType Directory -Path $staging | Out-Null
+
+    Copy-Item -Recurse (Join-Path $REPO_ROOT "src")          $staging\
+    Copy-Item           (Join-Path $REPO_ROOT "pyproject.toml") $staging\
+    Copy-Item           (Join-Path $REPO_ROOT "Dockerfile")      $staging\
+
+    $sizeMB = [math]::Round((Get-ChildItem $staging -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
+    Write-Host "Staging directory: $staging ($sizeMB MB)" -ForegroundColor DarkCyan
+    Write-Host "Submitting to ACR (--no-wait)..." -ForegroundColor Cyan
+    Write-Host "Tip: az acr task list-runs --registry $ACR_NAME --top 5" -ForegroundColor DarkCyan
+
+    # --no-wait prevents a Unicode encoding crash in Azure CLI log streaming on Windows.
+    az acr build --registry $ACR_NAME --resource-group $RESOURCE_GROUP --image pdf-extractor:latest --no-wait $staging
+}
+
 function Invoke-AzureJob([string]$filename) {
     Write-Host ""
     Write-Host "Starting Azure job for: $filename" -ForegroundColor Cyan
@@ -280,7 +301,7 @@ function Invoke-AzureJob([string]$filename) {
     $execName = az containerapp job start `
         --name $JOB_NAME `
         --resource-group $RESOURCE_GROUP `
-        --args $filename `
+        --env-vars "PDF_INPUT_FILE=$filename" `
         --query name -o tsv
     
     Write-Host "Execution: $execName" -ForegroundColor Yellow
@@ -733,10 +754,7 @@ if ($Mode -eq "azure") {
             
             "5" {
                 Write-Host ""
-                Write-Host "Building Docker image... (submitting to ACR, check status separately)" -ForegroundColor Cyan
-                Write-Host "Tip: az acr task list-runs --registry $ACR_NAME" -ForegroundColor DarkCyan
-                # --no-wait prevents a Unicode encoding crash in Azure CLI log streaming on Windows.
-                az acr build --registry $ACR_NAME --resource-group $RESOURCE_GROUP --image pdf-extractor:latest --no-wait .
+                Invoke-ImageBuild
                 Read-Host "Press Enter to continue"
             }
             

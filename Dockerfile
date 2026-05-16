@@ -31,8 +31,4 @@ ENV PDF_EXTRACTOR_OVERLAP_CHUNK_PAGES=20
 # AZURE_STORAGE_CONNECTION_STRING, AZURE_INPUT_CONTAINER, AZURE_OUTPUT_CONTAINER
 # are injected by Azure Container Apps at runtime — no .env file needed in the image.
 
-ENTRYPOINT ["python", "-m", "pdf_extractor.cli", "--azure", "--split-documents"]
-
-# Default blob to process; override at runtime:
-#   docker run ... <image> "Sample-2.pdf"
-CMD ["RO-1.pdf"]
+ENTRYPOINT ["sh", "-c", "python -m pdf_extractor.cli --azure --split-documents \"${PDF_INPUT_FILE}\""]
