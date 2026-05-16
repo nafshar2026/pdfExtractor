@@ -733,8 +733,10 @@ if ($Mode -eq "azure") {
             
             "5" {
                 Write-Host ""
-                Write-Host "Building Docker image... (3-5 min)" -ForegroundColor Cyan
-                az acr build --registry $ACR_NAME --image pdf-extractor:latest .
+                Write-Host "Building Docker image... (submitting to ACR, check status separately)" -ForegroundColor Cyan
+                Write-Host "Tip: az acr task list-runs --registry $ACR_NAME" -ForegroundColor DarkCyan
+                # --no-wait prevents a Unicode encoding crash in Azure CLI log streaming on Windows.
+                az acr build --registry $ACR_NAME --resource-group $RESOURCE_GROUP --image pdf-extractor:latest --no-wait .
                 Read-Host "Press Enter to continue"
             }
             

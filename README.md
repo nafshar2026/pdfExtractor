@@ -30,22 +30,29 @@ and scanned image pages; only the extraction method differs.
 
 To reliably process large scanned PDFs on constrained Azure job hardware, OCR now
 supports process isolation, worker recycling, bounded retries, and a configurable
-render-width cap.
+render-width cap. For very large files (1,000+ pages), windowed chunking keeps memory
+bounded by processing the PDF in overlapping 20-page windows rather than loading the
+entire file at once.
 
 Available controls:
 - `PDF_EXTRACTOR_OCR_ISOLATED=1`: run OCR in a dedicated subprocess
 - `PDF_EXTRACTOR_OCR_RECYCLE_CALLS=<N>`: recycle OCR worker every N OCR calls
 - `PDF_EXTRACTOR_OCR_POOL_RETRIES=<N>`: retry when OCR worker dies (for example OOM)
 - `PDF_EXTRACTOR_OCR_MAX_WIDTH=<pixels>`: downscale rendered page width before OCR
+- `PDF_EXTRACTOR_OVERLAP_CHUNK_PAGES=<N>`: enable windowed chunking; N pages per chunk (0 disables)
 
 Recommended production profile for large files:
 - `PDF_EXTRACTOR_OCR_ISOLATED=1`
 - `PDF_EXTRACTOR_OCR_RECYCLE_CALLS=6`
 - `PDF_EXTRACTOR_OCR_POOL_RETRIES=2`
-- `PDF_EXTRACTOR_OCR_MAX_WIDTH=1200`
+- `PDF_EXTRACTOR_OCR_MAX_WIDTH=800`
+- `PDF_EXTRACTOR_OVERLAP_CHUNK_PAGES=20`
+
+All five settings are baked into the Docker image and active by default in Azure.
 
 Validated outcomes:
-- 600157742.pdf and 600157748.pdf complete successfully in Azure with the hardened profile.
+- `600157742.pdf` and `600157748.pdf` complete successfully in Azure with the hardened profile.
+- `602819077.pdf` (3,900+ pages) completed in 1h 42m with windowed chunking, producing 27 documents.
 - Wildcard batch processing (for example `6*`) can process multiple large files in one run and produce one consolidated Excel output.
 
 ---
@@ -192,17 +199,18 @@ azure-deploy.sh         # One-time infrastructure setup (admin use only)
 
 ## Roadmap / Future Enhancements
 
-### Deduplication by Hash
-- Detect and eliminate duplicate pages within a PDF (regardless of position)
-- Use cryptographic hash (SHA-256) of page content to identify copies
-- Useful when deal jackets contain multiple copies of the same form or signature page
-- Targeted for Q2 2026
+### Completed
+- **Deduplication by perceptual hash**: Duplicate documents within a split run are detected
+  using a 64-bit average image hash (aHash). Pairs within Hamming distance 10 are flagged
+  in `suspected_duplicates.txt` in the output folder. Exact-byte and semantic-title dedup
+  also run automatically.
 
-### Other Potential Improvements
+### Potential Improvements
 - CLI flag for `--opt-in` extraction directly in `split-documents`
 - Batch processing dashboard with progress tracking
 - Custom page boundary rules per organization
 - Export split decisions as JSON for audit/review workflows
+- `--verbose` flag to print each page's boundary signal for diagnosing mis-splits
 .env.example            # Template for local environment variables
 ```
 
@@ -218,5 +226,7 @@ and job) are one-time.
 After any code change, rebuild the image and the job picks it up on the next run:
 
 ```powershell
-az acr build --registry NaderContainerRegistry --resource-group nader-test-rag --image pdf-extractor:latest .
+# --no-wait is required on Windows to avoid a Unicode encoding error in the Azure CLI log stream.
+# The build runs remotely in ACR; check status with: az acr task list-runs --registry NaderContainerRegistry
+az acr build --registry NaderContainerRegistry --resource-group nader-test-rag --image pdf-extractor:latest --no-wait .
 ```
