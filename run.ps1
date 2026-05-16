@@ -281,17 +281,47 @@ function Invoke-ImageBuild {
     if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
     New-Item -ItemType Directory -Path $staging | Out-Null
 
-    Copy-Item -Recurse (Join-Path $REPO_ROOT "src")          $staging\
+    Copy-Item -Recurse (Join-Path $REPO_ROOT "src")             $staging\
     Copy-Item           (Join-Path $REPO_ROOT "pyproject.toml") $staging\
-    Copy-Item           (Join-Path $REPO_ROOT "Dockerfile")      $staging\
+    Copy-Item           (Join-Path $REPO_ROOT "Dockerfile")     $staging\
 
     $sizeMB = [math]::Round((Get-ChildItem $staging -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
     Write-Host "Staging directory: $staging ($sizeMB MB)" -ForegroundColor DarkCyan
-    Write-Host "Submitting to ACR (--no-wait)..." -ForegroundColor Cyan
-    Write-Host "Tip: az acr task list-runs --registry $ACR_NAME --top 5" -ForegroundColor DarkCyan
 
-    # --no-wait prevents a Unicode encoding crash in Azure CLI log streaming on Windows.
+    $loginServer = az acr show --name $ACR_NAME --query "loginServer" -o tsv 2>$null
+    $image = "$loginServer/pdf-extractor:latest"
+
+    Write-Host "Submitting build to ACR..." -ForegroundColor Cyan
+    # --no-wait avoids a Unicode encoding crash in Azure CLI log streaming on Windows.
     az acr build --registry $ACR_NAME --resource-group $RESOURCE_GROUP --image pdf-extractor:latest --no-wait $staging
+
+    # Poll for completion, then re-pin the Container App job to the new image digest.
+    # Without this, the job stays locked to the old image even after a rebuild.
+    Write-Host "Waiting for build to complete (polling every 15s)..." -ForegroundColor Cyan
+    $maxWait = 600
+    $elapsed = 0
+    $buildDone = $false
+    while ($elapsed -lt $maxWait) {
+        Start-Sleep -Seconds 15
+        $elapsed += 15
+        $status = az acr task list-runs --registry $ACR_NAME --top 1 --query "[0].status" -o tsv 2>$null
+        Write-Host "  [$elapsed s] Build: $status" -ForegroundColor DarkCyan
+        if ($status -eq "Succeeded") { $buildDone = $true; break }
+        if ($status -eq "Failed" -or $status -eq "Canceled") {
+            Write-Host "Build $status — job image NOT updated." -ForegroundColor Red
+            return
+        }
+    }
+
+    if (-not $buildDone) {
+        Write-Host "Build did not complete within ${maxWait}s." -ForegroundColor Yellow
+        Write-Host "Run manually when done:  az containerapp job update --name $JOB_NAME --resource-group $RESOURCE_GROUP --image $image" -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "Build succeeded. Re-pinning Container App job to new image..." -ForegroundColor Cyan
+    az containerapp job update --name $JOB_NAME --resource-group $RESOURCE_GROUP --image $image --output none 2>&1 | Out-Null
+    Write-Host "Done — next job execution will use the new image." -ForegroundColor Green
 }
 
 function Invoke-AzureJob([string]$filename) {
