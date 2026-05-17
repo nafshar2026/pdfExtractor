@@ -365,7 +365,11 @@ function Invoke-AzureJob([string]$filename) {
         Start-Sleep -Seconds 10
         $elapsed += 10
     }
-    
+
+    if ($elapsed -ge $maxWait) {
+        Write-Host "Job still running after 10 minutes. Check status with menu option 3." -ForegroundColor Yellow
+    }
+
     # Save logs locally
     Write-Host "Saving logs to output/job-logs/..." -ForegroundColor Cyan
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -417,8 +421,8 @@ function Show-AzureMenu {
     $current = az containerapp job show `
         --name $JOB_NAME `
         --resource-group $RESOURCE_GROUP `
-        --query "properties.template.containers[0].args[0]" -o tsv 2>$null
-    
+        --query "properties.template.containers[0].env[?name=='PDF_INPUT_FILE'].value | [0]" -o tsv 2>$null
+
     Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host "  pdf-extractor - AZURE MODE" -ForegroundColor Cyan
     Write-Host "============================================================" -ForegroundColor Cyan
@@ -739,7 +743,7 @@ if ($Mode -eq "azure") {
                 $current = az containerapp job show `
                     --name $JOB_NAME `
                     --resource-group $RESOURCE_GROUP `
-                    --query "properties.template.containers[0].args[0]" -o tsv 2>$null
+                    --query "properties.template.containers[0].env[?name=='PDF_INPUT_FILE'].value | [0]" -o tsv 2>$null
                 Invoke-AzureJob $current | Out-Null
                 Read-Host "Press Enter to continue"
             }
@@ -753,10 +757,6 @@ if ($Mode -eq "azure") {
                 
                 $newFile = Read-Host "`nEnter blob name to process"
                 if ($newFile) {
-                    az containerapp job update `
-                        --name $JOB_NAME `
-                        --resource-group $RESOURCE_GROUP `
-                        --args $newFile | Out-Null
                     Invoke-AzureJob $newFile | Out-Null
                 }
                 Read-Host "Press Enter to continue"

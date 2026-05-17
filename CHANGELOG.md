@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## 2026-05-16
+
+### Added
+- Throughput trials: three deal jacket files timed under production conditions on Azure
+  Container Apps Consumption 4 vCPU / 8 GiB. Validated cost baseline: ~$0.00185/source page
+  (all-scanned worst case) and ~$0.00080–$0.00094/source page (mixed text+scan typical).
+  Full results in `trial_stats.md`.
+- Azure job output now organized under `pdfoutput/<source-filename>/` subfolders for
+  cleaner multi-run separation.
+
+### Fixed
+- `run.ps1 Show-AzureMenu` and menu option 1: current-file display now reads `PDF_INPUT_FILE`
+  env var instead of the defunct container args field.
+- `run.ps1` menu option 2: removed erroneous `--args` update that conflicted with the
+  `--set-env-vars` pattern used by `Invoke-AzureJob`.
+
+### Changed
+- Azure job replica timeout increased from 2 hours (7,200 s) to 24 hours (86,400 s) to
+  support large all-scanned files (400+ pages).
+- Hardened OCR profile updated to `RECYCLE_CALLS=4`, `POOL_RETRIES=4`, `MAX_WIDTH=900`
+  (previously 6/2/800 in docs; now matches deployed Azure container configuration).
+
+### Validated
+- `603110820.pdf` (457 pages, all-scanned, faint images): completed in 1h 55m, 36 documents.
+- `602954198.pdf` (152 pages, mixed): completed in 17 min, 18 documents.
+
 ## 2026-05-15
 
 ### Added

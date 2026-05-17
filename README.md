@@ -43,9 +43,9 @@ Available controls:
 
 Recommended production profile for large files:
 - `PDF_EXTRACTOR_OCR_ISOLATED=1`
-- `PDF_EXTRACTOR_OCR_RECYCLE_CALLS=6`
-- `PDF_EXTRACTOR_OCR_POOL_RETRIES=2`
-- `PDF_EXTRACTOR_OCR_MAX_WIDTH=800`
+- `PDF_EXTRACTOR_OCR_RECYCLE_CALLS=4`
+- `PDF_EXTRACTOR_OCR_POOL_RETRIES=4`
+- `PDF_EXTRACTOR_OCR_MAX_WIDTH=900`
 - `PDF_EXTRACTOR_OVERLAP_CHUNK_PAGES=20`
 
 All five settings are baked into the Docker image and active by default in Azure.
@@ -54,6 +54,10 @@ Validated outcomes:
 - `600157742.pdf` and `600157748.pdf` complete successfully in Azure with the hardened profile.
 - `602819077.pdf` (3,900+ pages) completed in 1h 42m with windowed chunking, producing 27 documents.
 - Wildcard batch processing (for example `6*`) can process multiple large files in one run and produce one consolidated Excel output.
+- **Throughput baseline (2026-05-16, Consumption 4 vCPU / 8 GiB):**
+  - All-scanned files (worst case): ~238 pages/hour | ~$0.00185/source page
+  - Mixed text+scanned files (typical): ~465–549 pages/hour | ~$0.00080–$0.00094/source page
+  - Example: 457-page all-scanned jacket → $0.85, 1h 55m; 152-page mixed → $0.12, 17 min
 
 ---
 
@@ -88,6 +92,8 @@ py -3.11 -m venv .venv
   - Output: Azure Blob Storage (`pdfoutput` container) + local Excel + logs
   - Note: Azure jobs run inside the container and cannot read your machine's local input/output folders.
     In Azure mode, users must upload inputs to `pdfinput` and read outputs from `pdfoutput`.
+  - Azure jobs time out after 24 hours. Long-running files (400+ pages, all-scanned) may take 1–2 hours; check status via menu option 3.
+  - Outputs are written to `pdfoutput/<source-filename>/` subfolders in blob storage.
 
 Both modes support optional opt-in extraction (generates Excel with credit app data).
 
@@ -204,13 +210,13 @@ azure-deploy.sh         # One-time infrastructure setup (admin use only)
   using a 64-bit average image hash (aHash). Pairs within Hamming distance 10 are flagged
   in `suspected_duplicates.txt` in the output folder. Exact-byte and semantic-title dedup
   also run automatically.
+- **`--verbose` flag**: Prints each page's boundary signal (`NEW_DOC`, `CONTINUATION`, `AMBIGUOUS`) to help diagnose mis-splits on new files.
 
 ### Potential Improvements
 - CLI flag for `--opt-in` extraction directly in `split-documents`
 - Batch processing dashboard with progress tracking
 - Custom page boundary rules per organization
 - Export split decisions as JSON for audit/review workflows
-- `--verbose` flag to print each page's boundary signal for diagnosing mis-splits
 .env.example            # Template for local environment variables
 ```
 
@@ -226,7 +232,8 @@ and job) are one-time.
 After any code change, rebuild the image and the job picks it up on the next run:
 
 ```powershell
-# --no-wait is required on Windows to avoid a Unicode encoding error in the Azure CLI log stream.
-# The build runs remotely in ACR; check status with: az acr task list-runs --registry NaderContainerRegistry
-az acr build --registry NaderContainerRegistry --resource-group nader-test-rag --image pdf-extractor:latest --no-wait .
+# Use run.ps1 option 5 (Rebuild Docker image) — it stages only the files Docker needs,
+# keeping the upload small, then polls until the build succeeds and re-pins the job.
+.\run.ps1 -Mode azure
+# → Choose option 5
 ```

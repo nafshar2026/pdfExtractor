@@ -145,9 +145,9 @@ To make large scanned PDFs reliable on small Azure job SKUs, OCR execution is no
 configurable via environment variables in `image_splitter.py`:
 
 - `PDF_EXTRACTOR_OCR_ISOLATED=1`: runs PaddleOCR in an isolated subprocess
-- `PDF_EXTRACTOR_OCR_RECYCLE_CALLS=6`: recycles worker to bound memory growth
-- `PDF_EXTRACTOR_OCR_POOL_RETRIES=2`: retries after worker crash/OOM
-- `PDF_EXTRACTOR_OCR_MAX_WIDTH=1200`: caps render width before OCR
+- `PDF_EXTRACTOR_OCR_RECYCLE_CALLS=4`: recycles worker to bound memory growth
+- `PDF_EXTRACTOR_OCR_POOL_RETRIES=4`: retries after worker crash/OOM
+- `PDF_EXTRACTOR_OCR_MAX_WIDTH=900`: caps render width before OCR
 
 This profile was validated against previously problematic large files (`600157742.pdf`,
 `600157748.pdf`) and in wildcard batch execution.
@@ -280,5 +280,4 @@ so the `(2)` and `(3)` suffixes on many output files are correct.
 - `VEhICLE_SERVICE_COnTrACT` — mixed-case OCR artifact in the title; caused by OCR
   reading the form at an angle.  Cosmetic only.
 - Still to process: `Sample-2.pdf` through `Sample-8.pdf`.
-- Consider a `--verbose` flag that prints each page's `PageSignal` to help diagnose
-  mis-splits on new files.
+- Validated throughput (2026-05-16, Consumption 4 vCPU / 8 GiB): ~238 pages/hr (all-scanned worst case), ~465–549 pages/hr (mixed). Cost: ~$0.00185/source page (all-scanned), ~$0.00080–$0.00094/source page (mixed). Full data in `trial_stats.md`.
