@@ -39,7 +39,7 @@ Available controls:
 - `PDF_EXTRACTOR_OCR_RECYCLE_CALLS=<N>`: recycle OCR worker every N OCR calls
 - `PDF_EXTRACTOR_OCR_POOL_RETRIES=<N>`: retry when OCR worker dies (for example OOM)
 - `PDF_EXTRACTOR_OCR_MAX_WIDTH=<pixels>`: downscale rendered page width before OCR
-- `PDF_EXTRACTOR_OVERLAP_CHUNK_PAGES=<N>`: windowed chunking; N pages per chunk (default 20; set to 0 to disable)
+- `PDF_EXTRACTOR_OVERLAP_CHUNK_PAGES=<N>`: pages per chunk for windowed chunking (default 20; always enabled)
 
 Recommended production profile for large files:
 - `PDF_EXTRACTOR_OCR_ISOLATED=1`
