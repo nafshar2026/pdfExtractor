@@ -120,6 +120,32 @@ _PHONE_RE = re.compile(r"[\+\(]?\d[\d\s\-\(\)\.]{7,}\d")
 # Date pattern used to detect a signed consent line.
 _DATE_RE = re.compile(r"\d{1,2}/\d{1,2}/\d{4}")
 
+# ---------------------------------------------------------------------------
+# Dealer section patterns (VIN, Dealer ID, Address)
+# ---------------------------------------------------------------------------
+
+# VIN: 17 chars from the standard VIN character set (no I, O, Q).
+_VIN_RE = re.compile(r"\bVIN\b[^A-Za-z0-9\n]{0,15}([A-HJ-NPR-Z0-9]{17})")
+
+# Dealer # / Dealer No. / Dealer Number label followed by ID value.
+_DEALER_ID_RE = re.compile(
+    r"Dealer\s*(?:#|No\.?|Number)\s*:?\s*([A-Z0-9]{3,12})", re.IGNORECASE
+)
+
+# Street address: digits + street name + type abbreviation or full word.
+_STREET_RE = re.compile(
+    r"(\d+\s+(?:[NESW]\.?\s+)?[A-Za-z][A-Za-z0-9\s]{2,30}"
+    r"(?:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Drive|Dr|Lane|Ln"
+    r"|Way|Court|Ct|Place|Pl|Highway|Hwy|Parkway|Pkwy|Circle|Cir|Terrace|Ter)"
+    r"\.?(?:\s+(?:Apt|Suite|Ste|Unit|#)\s*[\dA-Za-z]+)?)",
+    re.IGNORECASE,
+)
+
+# City State ZIP to complete the address (looked up near the street match).
+_CITY_STATE_ZIP_RE = re.compile(
+    r"([A-Za-z][A-Za-z\s]{1,25}?),?\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)"
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -141,6 +167,36 @@ def _detect_form_type(text: str) -> str:
     if _DT_FOOTER_RE.search(text):
         return "dealertrack"
     return "unknown"
+
+
+def _extract_vin(text: str) -> str | None:
+    m = _VIN_RE.search(text)
+    return m.group(1).upper() if m else None
+
+
+def _extract_dealer_id(text: str) -> str | None:
+    m = _DEALER_ID_RE.search(text)
+    return m.group(1).strip() if m else None
+
+
+def _extract_address(text: str) -> str | None:
+    """Best-effort address extraction from raw PDF text.
+
+    Finds a street-number-and-type pattern then looks nearby for city/state/zip.
+    May return None or a partial result when PDF text ordering scrambles fields.
+    """
+    street_m = _STREET_RE.search(text)
+    if not street_m:
+        return None
+    street = street_m.group(0).strip()
+    nearby = text[street_m.end():street_m.end() + 250]
+    csz_m = _CITY_STATE_ZIP_RE.search(nearby)
+    if csz_m:
+        city = csz_m.group(1).strip().title()
+        state = csz_m.group(2)
+        zip_code = csz_m.group(3)
+        return f"{street}, {city}, {state} {zip_code}"
+    return street
 
 
 def _unique_phones(raw_list: list[str]) -> list[str]:
@@ -197,15 +253,18 @@ def _routeone_from_text(text: str) -> dict:
         raw = [p.strip() for p in re.split(r"[,;]", m.group(1))]
         phones = _unique_phones(raw)
 
-    # --- Opt-in: look for a date on the Optional Consent signature line ---
+    # --- Opt-in + generated date ---
     # The Optional Consent is the SECOND "Applicant: By Date" block on the form.
     # We capture the text between that line and the "Source:" footer.
     opt_in_status = "opted_out"
+    generated_date: str | None = None
     m = _RO_OPT_CONSENT_RE.search(text)
     if m:
         consent_tail = m.group(1).strip()
-        if _DATE_RE.search(consent_tail):
+        date_m = _DATE_RE.search(consent_tail)
+        if date_m:
             opt_in_status = "opted_in"
+            generated_date = date_m.group(0)
 
     # Check if first signature has a date (used for vision fallback detection)
     has_first_sig_date = _routeone_has_first_signature_date(text)
@@ -213,6 +272,10 @@ def _routeone_from_text(text: str) -> dict:
     return {
         "last_name": last_name,
         "first_name": first_name,
+        "address": _extract_address(text),
+        "dealer_id": _extract_dealer_id(text),
+        "vin": _extract_vin(text),
+        "generated_date": generated_date,
         "opt_in_status": opt_in_status,
         "telemarketing_phones": phones,
         "confidence": "high",
@@ -355,9 +418,25 @@ Extract the following and return valid JSON only — no markdown, no explanation
    In the Optional Consent paragraph find "at the following telephone number(s):"
    and list every number that follows.
 
+4. CUSTOMER ADDRESS
+   Find the applicant's current/home address in the applicant section.
+   Return the full address as a single string (street, city, state, ZIP).
+
+5. DEALER INFORMATION (Dealer Section — usually page 2 or 3)
+   Find the "Dealer #" or "Dealer Number" field and extract the dealer ID.
+   Find the "VIN" field and extract the 17-character Vehicle Identification Number.
+
+6. GENERATED DATE
+   On the Optional Consent page, find the date written next to the applicant
+   signature line (the SECOND signature). Return it as MM/DD/YYYY or null.
+
 {
   "last_name": "<string or null>",
   "first_name": "<string or null>",
+  "address": "<string or null>",
+  "dealer_id": "<string or null>",
+  "vin": "<string or null>",
+  "generated_date": "<MM/DD/YYYY or null>",
   "opt_in_status": "opted_in" | "opted_out" | "unclear",
   "telemarketing_phones": ["<phone>", ...],
   "confidence": "high" | "medium" | "low"
@@ -365,8 +444,8 @@ Extract the following and return valid JSON only — no markdown, no explanation
 """
 
 _RO_OPTIN_ONLY_VISION_PROMPT = """\
-You are reviewing RouteOne credit application pages to determine ONLY the
-Optional Consent telemarketing opt-in status.
+You are reviewing RouteOne credit application pages to determine the
+Optional Consent telemarketing opt-in status and the date on the consent line.
 
 There are TWO signature areas:
 1) Credit Application Signature (required)
@@ -381,10 +460,13 @@ Rules:
     Optional Consent line, return opted_in.
 - If the Optional Consent line appears blank (no writing), return opted_out.
 - If image quality prevents a determination, return unclear.
+- Also extract the date written on the Optional Consent line (MM/DD/YYYY),
+    or null if blank or unreadable.
 
 Return valid JSON only:
 {
     "opt_in_status": "opted_in" | "opted_out" | "unclear",
+    "generated_date": "<MM/DD/YYYY or null>",
     "confidence": "high" | "medium" | "low"
 }
 """
@@ -411,9 +493,25 @@ Extract the following and return valid JSON only — no markdown, no explanation
    phone numbers the CUSTOMER wrote in (not the dealer's printed phone number).
    Return an empty list if the space is blank.
 
+4. CUSTOMER ADDRESS
+   Find the applicant's address in section A.
+   Return the full address as a single string (street, city, state, ZIP).
+
+5. DEALER INFORMATION (Dealer Section — usually page 2 or 3)
+   Find the "Dealer #" or "Dealer Number" field and extract the dealer ID.
+   Find the "VIN" field and extract the 17-character Vehicle Identification Number.
+
+6. GENERATED DATE
+   Find the date on the applicant signature line near the opt-in section.
+   Return it as MM/DD/YYYY or null if blank.
+
 {
   "last_name": "<string or null>",
   "first_name": "<string or null>",
+  "address": "<string or null>",
+  "dealer_id": "<string or null>",
+  "vin": "<string or null>",
+  "generated_date": "<MM/DD/YYYY or null>",
   "opt_in_status": "opted_in" | "opted_out" | "unclear",
   "telemarketing_phones": ["<phone>", ...],
   "confidence": "high" | "medium" | "low"
@@ -446,7 +544,7 @@ def _call_vision(pages, prompt: str, model: str | None = None,
     response = client.chat.completions.create(
         model=deployment,
         messages=[{"role": "user", "content": blocks}],
-        max_tokens=512,
+        max_tokens=1024,
         response_format={"type": "json_object"},
     )
     raw = response.choices[0].message.content
@@ -505,6 +603,10 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
                 "form_type": "routeone",
                 "last_name": data.get("last_name"),
                 "first_name": data.get("first_name"),
+                "address": data.get("address"),
+                "dealer_id": data.get("dealer_id"),
+                "vin": data.get("vin"),
+                "generated_date": vision.get("generated_date"),
                 "opt_in_status": opt_in_status,
                 "telemarketing_phones": data.get("telemarketing_phones") or [],
                 "confidence": vision.get("confidence", "medium"),
@@ -521,6 +623,10 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
             "form_type": "routeone",
             "last_name": vision.get("last_name"),
             "first_name": vision.get("first_name"),
+            "address": vision.get("address"),
+            "dealer_id": vision.get("dealer_id"),
+            "vin": vision.get("vin"),
+            "generated_date": vision.get("generated_date"),
             "opt_in_status": vision.get("opt_in_status", "unclear"),
             "telemarketing_phones": vision.get("telemarketing_phones") or [],
             "confidence": vision.get("confidence", "low"),
@@ -534,9 +640,15 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
         phones = _dealertrack_phones_from_text(text)
 
         # Checkbox state requires vision — render only the page that has it.
+        # Also extract generated_date from text on that same page.
+        generated_date: str | None = None
         opt_in_page_idx = _find_page_with(pdf_reader, "You opt in")
         if opt_in_page_idx is not None:
             page = pdf_reader.pages[opt_in_page_idx]
+            opt_in_page_text = page.extract_text() or ""
+            date_m = _DATE_RE.search(opt_in_page_text)
+            if date_m:
+                generated_date = date_m.group(0)
             vision = _call_vision([page], _DT_CHECKBOX_PROMPT,
                                   model=model, dpi=_DPI_CHECKBOX)
             opt_in_status = vision.get("opt_in_status", "unclear")
@@ -549,6 +661,10 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
             "form_type": "dealertrack",
             "last_name": last_name,
             "first_name": first_name,
+            "address": _extract_address(text),
+            "dealer_id": _extract_dealer_id(text),
+            "vin": _extract_vin(text),
+            "generated_date": generated_date,
             "opt_in_status": opt_in_status,
             "telemarketing_phones": phones,
             "confidence": confidence,
@@ -564,6 +680,10 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
             "form_type": "dealertrack",
             "last_name": vision.get("last_name"),
             "first_name": vision.get("first_name"),
+            "address": vision.get("address"),
+            "dealer_id": vision.get("dealer_id"),
+            "vin": vision.get("vin"),
+            "generated_date": vision.get("generated_date"),
             "opt_in_status": vision.get("opt_in_status", "unclear"),
             "telemarketing_phones": vision.get("telemarketing_phones") or [],
             "confidence": vision.get("confidence", "low"),
@@ -578,6 +698,10 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
         "form_type": "unknown",
         "last_name": vision.get("last_name"),
         "first_name": vision.get("first_name"),
+        "address": vision.get("address"),
+        "dealer_id": vision.get("dealer_id"),
+        "vin": vision.get("vin"),
+        "generated_date": vision.get("generated_date"),
         "opt_in_status": vision.get("opt_in_status", "unclear"),
         "telemarketing_phones": vision.get("telemarketing_phones") or [],
         "confidence": vision.get("confidence", "low"),
@@ -610,7 +734,11 @@ def write_results_to_excel(results: list[dict], output_xlsx: str | Path) -> None
     ws.title = "Opt-In Results"
 
     phone_headers = [f"Phone {i + 1}" for i in range(_MAX_PHONES)]
-    headers = ["Last Name", "First Name"] + phone_headers + ["Consent", "Source File"]
+    headers = (
+        ["Last Name", "First Name", "Address", "Dealer ID", "VIN", "Generated Date"]
+        + phone_headers
+        + ["Consent", "Source File"]
+    )
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
@@ -619,7 +747,14 @@ def write_results_to_excel(results: list[dict], output_xlsx: str | Path) -> None
         phones = (data.get("telemarketing_phones") or [])[:_MAX_PHONES]
         phone_cells = phones + [""] * (_MAX_PHONES - len(phones))
         ws.append(
-            [data.get("last_name") or "", data.get("first_name") or ""]
+            [
+                data.get("last_name") or "",
+                data.get("first_name") or "",
+                data.get("address") or "",
+                data.get("dealer_id") or "",
+                data.get("vin") or "",
+                data.get("generated_date") or "",
+            ]
             + phone_cells
             + [data.get("opt_in_status", ""), data.get("source_file", "")]
         )
@@ -643,7 +778,11 @@ def append_results_to_excel(results: list[dict], output_xlsx: str | Path) -> Non
 
     output_xlsx = Path(output_xlsx)
     phone_headers = [f"Phone {i + 1}" for i in range(_MAX_PHONES)]
-    headers = ["Last Name", "First Name"] + phone_headers + ["Consent", "Source File"]
+    headers = (
+        ["Last Name", "First Name", "Address", "Dealer ID", "VIN", "Generated Date"]
+        + phone_headers
+        + ["Consent", "Source File"]
+    )
 
     if output_xlsx.exists():
         wb = openpyxl.load_workbook(output_xlsx)
@@ -660,7 +799,14 @@ def append_results_to_excel(results: list[dict], output_xlsx: str | Path) -> Non
         phones = (data.get("telemarketing_phones") or [])[:_MAX_PHONES]
         phone_cells = phones + [""] * (_MAX_PHONES - len(phones))
         ws.append(
-            [data.get("last_name") or "", data.get("first_name") or ""]
+            [
+                data.get("last_name") or "",
+                data.get("first_name") or "",
+                data.get("address") or "",
+                data.get("dealer_id") or "",
+                data.get("vin") or "",
+                data.get("generated_date") or "",
+            ]
             + phone_cells
             + [data.get("opt_in_status", ""), data.get("source_file", "")]
         )
@@ -701,6 +847,8 @@ def process_folder_to_excel(
             _logger.error("Failed to process %s: %s", pdf_path, exc)
             data = {
                 "last_name": None, "first_name": None,
+                "address": None, "dealer_id": None, "vin": None,
+                "generated_date": None,
                 "opt_in_status": "error", "telemarketing_phones": [],
             }
         data["source_file"] = str(pdf_path)
