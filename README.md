@@ -39,7 +39,7 @@ Available controls:
 - `PDF_EXTRACTOR_OCR_RECYCLE_CALLS=<N>`: recycle OCR worker every N OCR calls
 - `PDF_EXTRACTOR_OCR_POOL_RETRIES=<N>`: retry when OCR worker dies (for example OOM)
 - `PDF_EXTRACTOR_OCR_MAX_WIDTH=<pixels>`: downscale rendered page width before OCR
-- `PDF_EXTRACTOR_OVERLAP_CHUNK_PAGES=<N>`: enable windowed chunking; N pages per chunk (0 disables)
+- `PDF_EXTRACTOR_OVERLAP_CHUNK_PAGES=<N>`: windowed chunking; N pages per chunk (default 20; set to 0 to disable)
 
 Recommended production profile for large files:
 - `PDF_EXTRACTOR_OCR_ISOLATED=1`
@@ -48,7 +48,7 @@ Recommended production profile for large files:
 - `PDF_EXTRACTOR_OCR_MAX_WIDTH=900`
 - `PDF_EXTRACTOR_OVERLAP_CHUNK_PAGES=20`
 
-All five settings are baked into the Docker image and active by default in Azure.
+All five settings are baked into the Docker image. Windowed chunking (`OVERLAP_CHUNK_PAGES=20`) is on by default in all modes — local and Azure.
 
 Validated outcomes:
 - `600157742.pdf` and `600157748.pdf` complete successfully in Azure with the hardened profile.

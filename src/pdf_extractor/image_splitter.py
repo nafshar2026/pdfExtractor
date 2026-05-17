@@ -69,7 +69,7 @@ _CHUNK_MAX_PAGES = max(0, _env_int("PDF_EXTRACTOR_CHUNK_MAX_PAGES", 0))
 # except the final window which emits all remaining groups. This keeps
 # boundary-spanning documents together without loading the whole document graph
 # at once.
-_OVERLAP_CHUNK_PAGES = max(0, _env_int("PDF_EXTRACTOR_OVERLAP_CHUNK_PAGES", 0))
+_OVERLAP_CHUNK_PAGES = max(0, _env_int("PDF_EXTRACTOR_OVERLAP_CHUNK_PAGES", 20))
 
 
 def _group_image_pages(

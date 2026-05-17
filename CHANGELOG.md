@@ -33,7 +33,7 @@ All notable changes to this project are documented in this file.
 ### Added
 - Windowed chunking via `PDF_EXTRACTOR_OVERLAP_CHUNK_PAGES`: splits very large PDFs into
   overlapping N-page windows so memory stays bounded regardless of source file size.
-  Enabled by default in the Docker image (`OVERLAP_CHUNK_PAGES=20`).
+  Enabled by default in all modes — local and Azure (`OVERLAP_CHUNK_PAGES=20`).
 - Perceptual hash (aHash) deduplication: after splitting, the first page of each output
   document is fingerprinted and pairs within Hamming distance 10 are reported in
   `suspected_duplicates.txt`. Exact-byte and semantic-title dedup also run automatically.
