@@ -56,7 +56,7 @@ All notable changes to this project are documented in this file.
   crash in Azure CLI log streaming on Windows.
 
 ### Validated
-- `602819077.pdf` (3,900+ pages) completed in 1h 42m on Azure with windowed chunking,
+- `602819077.pdf` (220 pages) completed in 1h 42m on Azure with windowed chunking,
   producing 27 split documents.
 
 ## 2026-05-13

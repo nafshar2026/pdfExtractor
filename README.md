@@ -52,7 +52,7 @@ All five settings are baked into the Docker image and active by default in Azure
 
 Validated outcomes:
 - `600157742.pdf` and `600157748.pdf` complete successfully in Azure with the hardened profile.
-- `602819077.pdf` (3,900+ pages) completed in 1h 42m with windowed chunking, producing 27 documents.
+- `602819077.pdf` (220 pages) completed in 1h 42m with windowed chunking, producing 27 documents.
 - Wildcard batch processing (for example `6*`) can process multiple large files in one run and produce one consolidated Excel output.
 - **Throughput baseline (2026-05-16, Consumption 4 vCPU / 8 GiB):**
   - All-scanned files (worst case): ~238 pages/hour | ~$0.00185/source page
