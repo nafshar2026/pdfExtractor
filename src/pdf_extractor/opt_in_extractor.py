@@ -117,31 +117,44 @@ _DT_PHONE_BLOCK_RE = re.compile(
 # Generic phone number pattern (used for extraction from a text block).
 _PHONE_RE = re.compile(r"[\+\(]?\d[\d\s\-\(\)\.]{7,}\d")
 
-# Date pattern used to detect a signed consent line.
+# Date pattern (numeric MM/DD/YYYY) — used to detect a signed consent line.
 _DATE_RE = re.compile(r"\d{1,2}/\d{1,2}/\d{4}")
 
-# ---------------------------------------------------------------------------
-# Dealer section patterns (VIN, Dealer ID, Address)
-# ---------------------------------------------------------------------------
-
-# VIN: 17 chars from the standard VIN character set (no I, O, Q).
-_VIN_RE = re.compile(r"\bVIN\b[^A-Za-z0-9\n]{0,15}([A-HJ-NPR-Z0-9]{17})")
-
-# Dealer # / Dealer No. / Dealer Number label followed by ID value.
-_DEALER_ID_RE = re.compile(
-    r"Dealer\s*(?:#|No\.?|Number)\s*:?\s*([A-Z0-9]{3,12})", re.IGNORECASE
-)
-
-# Street address: digits + street name + type abbreviation or full word.
-_STREET_RE = re.compile(
-    r"(\d+\s+(?:[NESW]\.?\s+)?[A-Za-z][A-Za-z0-9\s]{2,30}"
-    r"(?:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Drive|Dr|Lane|Ln"
-    r"|Way|Court|Ct|Place|Pl|Highway|Hwy|Parkway|Pkwy|Circle|Cir|Terrace|Ter)"
-    r"\.?(?:\s+(?:Apt|Suite|Ste|Unit|#)\s*[\dA-Za-z]+)?)",
+# Broader date pattern: also matches "January 07, 2025" written-out format.
+_VERBOSE_DATE_RE = re.compile(
+    r"\d{1,2}/\d{1,2}/\d{4}"
+    r"|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?"
+    r"|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+    r"\s+\d{1,2},?\s+\d{4}",
     re.IGNORECASE,
 )
 
-# City State ZIP to complete the address (looked up near the street match).
+# ---------------------------------------------------------------------------
+# Dealer section patterns (VIN, Dealer ID, Address)
+# User note: Dealer # and VIN are on the LAST page of the Credit Application.
+# ---------------------------------------------------------------------------
+
+# VIN: any run of 17+ consecutive chars from the VIN character set (no I, O, Q).
+# DealerTrack concatenates VIN with model info (e.g. "1C4PJXDG4RW347305SPORT…"),
+# so we match 17+ and take the first 17.
+_VIN_RUN_RE = re.compile(r"[A-HJ-NPR-Z0-9]{17,}")
+
+# Dealer # label on the same line as the value (no cross-line match).
+_DEALER_ID_RE = re.compile(
+    r"Dealer\s*(?:#|No\.?|Number)[^\S\n]*:?[^\S\n]*([A-Z0-9]{3,12})",
+    re.IGNORECASE,
+)
+
+# DealerTrack address: all-caps street number + name on its own line.
+# DT forms omit the street type (e.g. "2948 GREENBRIAR" with no "St" suffix).
+_DT_STREET_RE = re.compile(r"^(\d+[ \t]+[A-Z][A-Z0-9 \t]{2,40})$", re.MULTILINE)
+
+# DealerTrack city/state/zip appear concatenated: "78156TXSEGUIN"
+_DT_ZIP_STATE_CITY_RE = re.compile(
+    r"^(\d{5})([A-Z]{2})([A-Z][A-Z\s]+)$", re.MULTILINE
+)
+
+# Generic city State ZIP for RouteOne and other forms with proper spacing.
 _CITY_STATE_ZIP_RE = re.compile(
     r"([A-Za-z][A-Za-z\s]{1,25}?),?\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)"
 )
@@ -169,23 +182,62 @@ def _detect_form_type(text: str) -> str:
     return "unknown"
 
 
-def _extract_vin(text: str) -> str | None:
-    m = _VIN_RE.search(text)
-    return m.group(1).upper() if m else None
+def _extract_vin(last_page_text: str) -> str | None:
+    """Extract VIN from the dealer section (last page of credit application).
+
+    Matches any run of 17+ consecutive VIN-charset chars and returns the first 17.
+    This handles DealerTrack's concatenated layout (e.g. VIN+model with no separator).
+    """
+    m = _VIN_RUN_RE.search(last_page_text)
+    return m.group(0)[:17] if m else None
 
 
-def _extract_dealer_id(text: str) -> str | None:
-    m = _DEALER_ID_RE.search(text)
+def _extract_dealer_id(last_page_text: str) -> str | None:
+    """Extract Dealer # from the dealer section (last page of credit application).
+
+    Only matches the value on the same line as the label to avoid false positives
+    from adjacent field names on the next line.
+    """
+    m = _DEALER_ID_RE.search(last_page_text)
     return m.group(1).strip() if m else None
 
 
-def _extract_address(text: str) -> str | None:
-    """Best-effort address extraction from raw PDF text.
+def _extract_dt_address(page_text: str) -> str | None:
+    """Extract applicant address from a DealerTrack form page.
 
-    Finds a street-number-and-type pattern then looks nearby for city/state/zip.
-    May return None or a partial result when PDF text ordering scrambles fields.
+    DealerTrack forms have all-caps addresses without street-type suffixes
+    (e.g. "2948 GREENBRIAR") and concatenate city/state/zip as "78156TXSEGUIN".
+    Searches for both patterns and reconstructs the full address string.
     """
-    street_m = _STREET_RE.search(text)
+    street_m = _DT_STREET_RE.search(page_text)
+    if not street_m:
+        return None
+    street = street_m.group(1).strip().title()
+
+    csz_m = _DT_ZIP_STATE_CITY_RE.search(page_text)
+    if csz_m:
+        zip_code = csz_m.group(1)
+        state = csz_m.group(2)
+        city = csz_m.group(3).strip().title()
+        return f"{street}, {city}, {state} {zip_code}"
+    return street
+
+
+def _extract_ro_address(text: str) -> str | None:
+    """Best-effort address extraction for RouteOne forms.
+
+    RouteOne forms use normal spacing and street-type suffixes.
+    Finds a street pattern then looks nearby for city/state/zip.
+    """
+    # Street with a type suffix (St, Ave, Blvd, etc.)
+    street_re = re.compile(
+        r"(\d+\s+(?:[NESW]\.?\s+)?[A-Za-z][A-Za-z0-9\s]{2,30}"
+        r"(?:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Drive|Dr|Lane|Ln"
+        r"|Way|Court|Ct|Place|Pl|Highway|Hwy|Parkway|Pkwy|Circle|Cir)"
+        r"\.?(?:\s+(?:Apt|Suite|Ste|Unit|#)\s*[\dA-Za-z]+)?)",
+        re.IGNORECASE,
+    )
+    street_m = street_re.search(text)
     if not street_m:
         return None
     street = street_m.group(0).strip()
@@ -272,7 +324,7 @@ def _routeone_from_text(text: str) -> dict:
     return {
         "last_name": last_name,
         "first_name": first_name,
-        "address": _extract_address(text),
+        "address": _extract_ro_address(text),
         "dealer_id": _extract_dealer_id(text),
         "vin": _extract_vin(text),
         "generated_date": generated_date,
@@ -639,16 +691,26 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
         last_name, first_name = _dealertrack_name_from_text(text)
         phones = _dealertrack_phones_from_text(text)
 
+        # VIN and Dealer # are on the last page (Dealer Section).
+        last_page_text = pdf_reader.pages[-1].extract_text() or ""
+        vin = _extract_vin(last_page_text)
+        dealer_id = _extract_dealer_id(last_page_text)
+
+        # Address is on the applicant page (first page for applicant, page 0).
+        applicant_page_text = pdf_reader.pages[0].extract_text() or ""
+        address = _extract_dt_address(applicant_page_text)
+
         # Checkbox state requires vision — render only the page that has it.
-        # Also extract generated_date from text on that same page.
+        # Generated date: take the LAST date on the opt-in page (the DOB appears
+        # earlier in pypdf's reading order; the signature date is at the end).
         generated_date: str | None = None
         opt_in_page_idx = _find_page_with(pdf_reader, "You opt in")
         if opt_in_page_idx is not None:
             page = pdf_reader.pages[opt_in_page_idx]
             opt_in_page_text = page.extract_text() or ""
-            date_m = _DATE_RE.search(opt_in_page_text)
-            if date_m:
-                generated_date = date_m.group(0)
+            all_dates = list(_VERBOSE_DATE_RE.finditer(opt_in_page_text))
+            if all_dates:
+                generated_date = all_dates[-1].group(0)
             vision = _call_vision([page], _DT_CHECKBOX_PROMPT,
                                   model=model, dpi=_DPI_CHECKBOX)
             opt_in_status = vision.get("opt_in_status", "unclear")
@@ -661,9 +723,9 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
             "form_type": "dealertrack",
             "last_name": last_name,
             "first_name": first_name,
-            "address": _extract_address(text),
-            "dealer_id": _extract_dealer_id(text),
-            "vin": _extract_vin(text),
+            "address": address,
+            "dealer_id": dealer_id,
+            "vin": vin,
             "generated_date": generated_date,
             "opt_in_status": opt_in_status,
             "telemarketing_phones": phones,
