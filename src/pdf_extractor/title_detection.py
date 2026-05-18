@@ -366,7 +366,7 @@ def _is_footer_variant(candidate_key: str, footer_key: str) -> bool:
         return False
     if candidate_key == footer_key:
         return True
-    if len(candidate_key) >= 10 and candidate_key in footer_key:
+    if len(candidate_key) >= 10 and candidate_key in footer_key and len(footer_key) <= 2 * len(candidate_key):
         return True
     return False
 
@@ -505,6 +505,15 @@ def _extract_text_title(
         if any(ord(c) > 127 and c.isalpha() for c in stripped):
             continue
         if _TEXT_TITLE_SKIP_RE.search(stripped):
+            # "Title: Subtitle" pattern — try the pre-colon portion as the title.
+            if ':' in stripped and not re.search(r'[#@©()]', stripped):
+                pre = stripped[:stripped.index(':')].strip()
+                pre_words = pre.split()
+                if (2 <= len(pre_words) <= 4
+                        and _TITLE_DOCWORD_RE.search(pre)
+                        and not appears_in_footer(pre)
+                        and all(w[0].isupper() for w in pre_words if w and w[0].isalpha())):
+                    return _sanitize_filename(_normalize_detected_title(pre))
             continue
         if _TEXT_TITLE_SECTION_RE.match(stripped):
             continue
