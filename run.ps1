@@ -574,10 +574,10 @@ if ($Mode -eq "local") {
             
             "5" {
                 # Configuration menu
-                while ($true) {
+                :configLoop while ($true) {
                     Show-ConfigMenu
                     $cfgChoice = Read-Host "Enter choice"
-                    
+
                     switch ($cfgChoice) {
                         "1" {
                             $newPath = Read-Host "Enter full path to input PDF directory"
@@ -631,7 +631,7 @@ if ($Mode -eq "local") {
                         }
                         
                         "0" {
-                            break
+                            break configLoop
                         }
                         
                         default {
