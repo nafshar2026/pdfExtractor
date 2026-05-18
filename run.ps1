@@ -467,6 +467,8 @@ function Show-LocalOutputs {
 
 function Process-PatternSelect([string]$pattern, [bool]$withOptIn) {
     $pdfs = Get-LocalPdfs
+    # Strip .pdf suffix if the user included it — the regex appends \.pdf$ itself.
+    if ($pattern -match '\.pdf$') { $pattern = $pattern -replace '\.pdf$', '' }
     # Match pattern: convert wildcard to regex (6* → 6.*, Sample-* → Sample-.*)
     $regexPattern = "^" + [regex]::Escape($pattern).Replace("\*", ".*") + "\.pdf$"
     $matched = $pdfs | Where-Object { $_.Name -match $regexPattern }
