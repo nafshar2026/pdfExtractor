@@ -560,7 +560,7 @@ if ($Mode -eq "local") {
     }
     
     # Interactive menu
-    while ($true) {
+    :localLoop while ($true) {
         Show-LocalMenu
         $choice = Read-Host "Enter choice"
         
@@ -713,7 +713,7 @@ if ($Mode -eq "local") {
                     Read-Host "Press Enter to continue"
                 } else {
                     $Mode = "azure"
-                    break
+                    break localLoop
                 }
             }
             
