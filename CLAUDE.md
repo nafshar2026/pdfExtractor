@@ -43,7 +43,7 @@ py -3.11 -m venv .venv
     --split-documents \
     --split-output-dir output/split-1
 
-# Run tests (53 tests)
+# Run tests (87 tests)
 .venv/Scripts/python -m pytest tests/ -v
 
 # Generate the sample multi-document test PDF (text-based)
@@ -63,8 +63,8 @@ Extracts telemarketing opt-in status and contact information from DealerTrack an
 
 | Form Type  | Pages         | Text Extraction             | Image Extraction       |
 |------------|---------------|-----------------------------|-----------------------|
-| RouteOne   | 2-3 pages     | Name + phones from text; opt-in from 2nd signature date | Full vision fallback |
-| DealerTrack| 1-2 pages     | Name + phones from text; opt-in via vision checkbox only | Full vision fallback |
+| RouteOne   | 2-3 pages     | Name, address, phones, VIN from text; opt-in from 2nd signature date | Full vision fallback |
+| DealerTrack| 2-4 pages     | Name, address, phones from text; opt-in via vision checkbox; dealer ID and product type via fitz coordinate extraction | Full vision fallback |
 
 ### Return Format (JSON)
 
@@ -73,6 +73,11 @@ Extracts telemarketing opt-in status and contact information from DealerTrack an
   "form_type": "routeone" | "dealertrack" | "unknown",
   "last_name": "<string or null>",
   "first_name": "<string or null>",
+  "address": "<string or null>",
+  "dealer_id": "<string or null>",
+  "vin": "<string or null>",
+  "product_type": "<string or null>",
+  "generated_date": "<string or null>",
   "opt_in_status": "opted_in" | "opted_out" | "unclear" | "not_found",
   "telemarketing_phones": ["<phone>", ...],
   "confidence": "high" | "medium" | "low"
@@ -83,12 +88,20 @@ Extracts telemarketing opt-in status and contact information from DealerTrack an
 
 **RouteOne (text path):**
 - Name: parsed from "Credit Application: Applicant" line
+- Address: extracted via street-type suffix pattern + city/state/ZIP
 - Phones: extracted from "at the following telephone number(s):" section
+- VIN: matched as a 17-char VIN-charset run in the full text
+- Dealer ID / Product Type: fitz coordinate extraction from last page Dealer Section
 - Opt-in: presence of date on the **Optional Consent applicant signature line** (SECOND signature)
+- Generated date: date on the Optional Consent signature line
 
 **DealerTrack (text path):**
 - Name: parsed from SSN-anchored pattern (LAST FIRST followed by SSN)
+- Address: all-caps street pattern + concatenated ZIP/state/city (e.g. `78156TXSEGUIN`)
 - Phones: extracted from blank space between "at the following number(s)" and "including any cell phone numbers"
+- VIN: matched as a 17-char VIN-charset run on the last page
+- Dealer ID / Product Type: fitz word-coordinate extraction from the Dealer Section grid on the last page (columns: Dealer # | Vehicle Type | Mileage | Product Type)
+- Generated date: last date on the opt-in page (DOB appears first; signature date is last)
 - Opt-in: requires vision to detect checkbox mark (text path only yields name + phones)
 
 **Vision fallback (scanned pages):**

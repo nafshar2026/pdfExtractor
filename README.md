@@ -52,7 +52,6 @@ All five settings are baked into the Docker image. Windowed chunking (`OVERLAP_C
 
 Validated outcomes:
 - `600157742.pdf` and `600157748.pdf` complete successfully in Azure with the hardened profile.
-- `602819077.pdf` (220 pages) completed in 1h 42m with windowed chunking, producing 27 documents.
 - Wildcard batch processing (for example `6*`) can process multiple large files in one run and produce one consolidated Excel output.
 - **Throughput baseline (2026-05-16, Consumption 4 vCPU / 8 GiB):**
   - All-scanned files (worst case): ~238 pages/hour | ~$0.00185/source page
@@ -74,7 +73,14 @@ py -3.11 -m venv .venv
 **Azure mode only:**
 1. Download Azure CLI: `https://aka.ms/installazurecliwindows`
 2. Ask your project owner to grant you **Contributor** access to `nader-test-rag` resource group
-3. Before each session: activate your PIM role (Azure Portal → Privileged Identity Management → My Roles → Activate)
+3. Before each session:
+   - Activate your PIM role (Azure Portal → Privileged Identity Management → My Roles → Activate)
+   - Log in to Azure and select the correct subscription:
+     ```powershell
+     az login
+     az account set --subscription "<subscription-name-or-id>"
+     ```
+   - `run.ps1` will detect an active login automatically and skip the login prompt if you are already authenticated.
 
 ### Run the interactive launcher
 
@@ -102,7 +108,7 @@ Both modes support optional opt-in extraction (generates Excel with credit app d
 All modes produce:
 - **Split PDFs**: One folder per source file under `output/split-*/`
 - **Excel files** (if opt-in enabled): `output/opt_in_results-<filename>.xlsx`
-  - Columns: Filename, Form Type, Name, Opt-In Status, Phones, Confidence
+  - Columns: Last Name, First Name, Address, Dealer ID, VIN, Product Type, Generated Date, Phone 1–3, Consent, Source File
 - **Job logs**: `output/job-logs/<execution-id>-<timestamp>.log`
   - Timestamped to preserve history; clean up manually as needed
 
@@ -140,11 +146,11 @@ Azure mode path behavior:
 # Optional: isolate OCR in a worker process (helps large scanned PDFs)
 $env:PDF_EXTRACTOR_OCR_ISOLATED = "1"
 # Recycle OCR worker every N OCR calls (two calls per scanned page)
-$env:PDF_EXTRACTOR_OCR_RECYCLE_CALLS = "6"
+$env:PDF_EXTRACTOR_OCR_RECYCLE_CALLS = "4"
 # Retry if the isolated worker crashes
-$env:PDF_EXTRACTOR_OCR_POOL_RETRIES = "2"
+$env:PDF_EXTRACTOR_OCR_POOL_RETRIES = "4"
 # Cap OCR render width (lower memory use for very large scans)
-$env:PDF_EXTRACTOR_OCR_MAX_WIDTH = "1200"
+$env:PDF_EXTRACTOR_OCR_MAX_WIDTH = "900"
 .venv\Scripts\python -m pdf_extractor.cli src/pdf_extractor/Data/Sample-1.pdf \
   --split-documents --split-output-dir output/split-sample
 
@@ -165,18 +171,22 @@ $env:PDF_EXTRACTOR_OCR_MAX_WIDTH = "1200"
 ## Credit Application Extraction (Opt-In Data)
 
 Supported forms:
-- **RouteOne** (digital or scanned): Extracts name, phone, and opt-in status from "Optional Consent" signature line
-- **DealerTrack** (digital or scanned): Extracts name, phone, and opt-in status from checkbox
+- **RouteOne** (digital or scanned): name, address, phones, opt-in status, dealer ID, VIN, and signed date from the "Optional Consent" signature line
+- **DealerTrack** (digital or scanned): same fields; opt-in determined by vision (checkbox mark); dealer ID and product type extracted from the Dealer Section using coordinate-based fitz parsing
 
-Excel output columns:
-- **Filename**: Source PDF name
-- **Form Type**: routeone / dealertrack / unknown
-- **Last Name / First Name**: Extracted from credit application
-- **Opt-In Status**: opted_in / opted_out / unclear / not_found
-- **Telemarketing Phones**: List of phone numbers
-- **Confidence**: high / medium / low
+Excel output columns (one row per `Credit_Application.pdf`):
 
-### Local mode (non-interactive)
+| Column | Description |
+|---|---|
+| Last Name / First Name | Applicant name |
+| Address | Applicant street address, city, state, ZIP |
+| Dealer ID | Dealer number from the Dealer Section |
+| VIN | 17-character Vehicle Identification Number |
+| Product Type | Retail/used classification from the Dealer Section (e.g. RETL) |
+| Generated Date | Date on the applicant signature / consent line |
+| Phone 1–3 | Telemarketing phone numbers listed by the applicant |
+| Consent | opted_in / opted_out / unclear / not_found |
+| Source File | Path to the source `Credit_Application.pdf` |
 
 ---
 
@@ -184,10 +194,15 @@ Excel output columns:
 
 ```
 src/pdf_extractor/
-    extractor.py        # Core pypdf utilities and data models
-    image_splitter.py   # split_pdf() entry point and all boundary-detection logic
     cli.py              # argparse CLI — local and Azure modes
+    image_splitter.py   # split_pdf() entry point and windowed-chunking orchestration
+    page_analysis.py    # Per-page OCR and boundary-signal logic (NEW_DOC / CONTINUATION / AMBIGUOUS)
+    title_detection.py  # ALL-CAPS title heuristics for OCR pages
+    overlap_splitter.py # Windowed-chunk helpers
+    ocr_runtime.py      # PaddleOCR process isolation and worker recycling
+    dedup.py            # Perceptual hash and semantic deduplication
     opt_in_extractor.py # Credit application opt-in extraction (text + vision)
+    extractor.py        # Core pypdf utilities and data models
     azure_storage.py    # Azure Blob Storage download/upload helpers
     genpdf.py           # Utility: generates text-based test PDFs
 
@@ -199,6 +214,7 @@ run.ps1                 # Unified launcher (local + Azure modes) — **START HER
 run-local.ps1           # Legacy local launcher (delegates to run.ps1)
 Dockerfile              # Container image definition
 azure-deploy.sh         # One-time infrastructure setup (admin use only)
+.env.example            # Template for local environment variables (copy to .env and fill in)
 ```
 
 ---
@@ -211,14 +227,13 @@ azure-deploy.sh         # One-time infrastructure setup (admin use only)
   in `suspected_duplicates.txt` in the output folder. Exact-byte and semantic-title dedup
   also run automatically.
 - **`--verbose` flag**: Prints each page's boundary signal (`NEW_DOC`, `CONTINUATION`, `AMBIGUOUS`) to help diagnose mis-splits on new files.
+- **Extended credit application extraction**: Address, Dealer ID, VIN, Product Type, and Generated Date added alongside name, phones, and consent status.
 
 ### Potential Improvements
 - CLI flag for `--opt-in` extraction directly in `split-documents`
 - Batch processing dashboard with progress tracking
 - Custom page boundary rules per organization
 - Export split decisions as JSON for audit/review workflows
-.env.example            # Template for local environment variables
-```
 
 ---
 

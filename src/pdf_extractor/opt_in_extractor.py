@@ -192,14 +192,84 @@ def _extract_vin(last_page_text: str) -> str | None:
     return m.group(0)[:17] if m else None
 
 
-def _extract_dealer_id(last_page_text: str) -> str | None:
-    """Extract Dealer # from the dealer section (last page of credit application).
+def _extract_dealer_section(last_pdf_page) -> tuple[str | None, str | None]:
+    """Extract Dealer ID and Product Type from the DealerTrack dealer section.
 
-    Only matches the value on the same line as the label to avoid false positives
-    from adjacent field names on the next line.
+    Uses fitz word-level coordinates to locate the 'Dealer #' and 'Product Type'
+    column headers, then extracts the value directly below each header.
+
+    The DealerTrack dealer section row layout is:
+        Dealer # | Vehicle Type | Mileage | Product Type | Stock Number | Source
+
+    fitz bundles these values right-to-left in a single block, so coordinate-based
+    word extraction is used instead of block-level text parsing.
+
+    Returns (dealer_id, product_type).  Falls back to regex on any failure.
     """
-    m = _DEALER_ID_RE.search(last_page_text)
-    return m.group(1).strip() if m else None
+    try:
+        import fitz
+        from pypdf import PdfWriter
+
+        writer = PdfWriter()
+        writer.add_page(last_pdf_page)
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            writer.write(tmp)
+
+        doc = fitz.open(str(tmp_path))
+        fitz_page = doc[0]
+        raw_words = fitz_page.get_text("words")
+        doc.close()
+        tmp_path.unlink(missing_ok=True)
+
+        # Each word tuple: (x0, y0, x1, y1, text, block_no, line_no, word_no)
+        ws = [(w[0], w[1], w[2], w[3], w[4]) for w in raw_words]
+
+        # Locate column header x-positions and the bottom y of the header row.
+        # Match title-case "Dealer" (not "DEALER SECTION" header).
+        dealer_label_x: float | None = None
+        product_label_x: float | None = None
+        header_y_bottom: float | None = None
+
+        for x0, y0, x1, y1, txt in ws:
+            if txt == "Dealer" and dealer_label_x is None:
+                dealer_label_x = x0
+                header_y_bottom = y1
+            if txt == "Product":
+                # Confirm "Type" follows on the same line (same y, to the right).
+                if any(abs(w2[1] - y0) < 3 and w2[4] == "Type" and w2[0] > x0
+                       for w2 in ws):
+                    product_label_x = x0
+
+        dealer_id = None
+        product_type = None
+
+        if dealer_label_x is not None and header_y_bottom is not None:
+            candidates = sorted(
+                [(x0, y0, txt) for x0, y0, _x1, _y1, txt in ws
+                 if abs(x0 - dealer_label_x) < 15 and y0 >= header_y_bottom - 2],
+                key=lambda c: c[1],
+            )
+            if candidates:
+                val = candidates[0][2]
+                if re.match(r"^[A-Z0-9]{3,12}$", val, re.IGNORECASE):
+                    dealer_id = val
+
+        if product_label_x is not None and header_y_bottom is not None:
+            candidates = sorted(
+                [(x0, y0, txt) for x0, y0, _x1, _y1, txt in ws
+                 if abs(x0 - product_label_x) < 15 and y0 >= header_y_bottom - 2],
+                key=lambda c: c[1],
+            )
+            if candidates:
+                product_type = candidates[0][2]
+
+        return dealer_id, product_type
+
+    except Exception:
+        page_text = last_pdf_page.extract_text() or ""
+        m = _DEALER_ID_RE.search(page_text)
+        return (m.group(1).strip() if m else None), None
 
 
 def _extract_dt_address(page_text: str) -> str | None:
@@ -325,7 +395,6 @@ def _routeone_from_text(text: str) -> dict:
         "last_name": last_name,
         "first_name": first_name,
         "address": _extract_ro_address(text),
-        "dealer_id": _extract_dealer_id(text),
         "vin": _extract_vin(text),
         "generated_date": generated_date,
         "opt_in_status": opt_in_status,
@@ -477,6 +546,8 @@ Extract the following and return valid JSON only — no markdown, no explanation
 5. DEALER INFORMATION (Dealer Section — usually page 2 or 3)
    Find the "Dealer #" or "Dealer Number" field and extract the dealer ID.
    Find the "VIN" field and extract the 17-character Vehicle Identification Number.
+   Find the "Product Type" field (4th column: Dealer # | Vehicle Type | Mileage | Product Type)
+   and extract its value (e.g. RETL, USED, NEW).
 
 6. GENERATED DATE
    On the Optional Consent page, find the date written next to the applicant
@@ -488,6 +559,7 @@ Extract the following and return valid JSON only — no markdown, no explanation
   "address": "<string or null>",
   "dealer_id": "<string or null>",
   "vin": "<string or null>",
+  "product_type": "<string or null>",
   "generated_date": "<MM/DD/YYYY or null>",
   "opt_in_status": "opted_in" | "opted_out" | "unclear",
   "telemarketing_phones": ["<phone>", ...],
@@ -552,6 +624,8 @@ Extract the following and return valid JSON only — no markdown, no explanation
 5. DEALER INFORMATION (Dealer Section — usually page 2 or 3)
    Find the "Dealer #" or "Dealer Number" field and extract the dealer ID.
    Find the "VIN" field and extract the 17-character Vehicle Identification Number.
+   Find the "Product Type" field (4th column: Dealer # | Vehicle Type | Mileage | Product Type)
+   and extract its value (e.g. RETL, USED, NEW).
 
 6. GENERATED DATE
    Find the date on the applicant signature line near the opt-in section.
@@ -563,6 +637,7 @@ Extract the following and return valid JSON only — no markdown, no explanation
   "address": "<string or null>",
   "dealer_id": "<string or null>",
   "vin": "<string or null>",
+  "product_type": "<string or null>",
   "generated_date": "<MM/DD/YYYY or null>",
   "opt_in_status": "opted_in" | "opted_out" | "unclear",
   "telemarketing_phones": ["<phone>", ...],
@@ -637,6 +712,10 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
     # ------------------------------------------------------------------
     if form_type == "routeone" and text_heavy:
         data = _routeone_from_text(text)
+        # Dealer section fields require page-object access for coordinate extraction.
+        dealer_id, product_type = _extract_dealer_section(pdf_reader.pages[-1])
+        data["dealer_id"] = dealer_id
+        data["product_type"] = product_type
         # If the first (mandatory) signature has no extractable date, both
         # signatures are likely handwritten/images. Fall back to vision.
         if not data.pop("has_first_sig_date", True):
@@ -658,6 +737,7 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
                 "address": data.get("address"),
                 "dealer_id": data.get("dealer_id"),
                 "vin": data.get("vin"),
+                "product_type": data.get("product_type"),
                 "generated_date": vision.get("generated_date"),
                 "opt_in_status": opt_in_status,
                 "telemarketing_phones": data.get("telemarketing_phones") or [],
@@ -678,6 +758,7 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
             "address": vision.get("address"),
             "dealer_id": vision.get("dealer_id"),
             "vin": vision.get("vin"),
+            "product_type": vision.get("product_type"),
             "generated_date": vision.get("generated_date"),
             "opt_in_status": vision.get("opt_in_status", "unclear"),
             "telemarketing_phones": vision.get("telemarketing_phones") or [],
@@ -691,10 +772,11 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
         last_name, first_name = _dealertrack_name_from_text(text)
         phones = _dealertrack_phones_from_text(text)
 
-        # VIN and Dealer # are on the last page (Dealer Section).
-        last_page_text = pdf_reader.pages[-1].extract_text() or ""
+        # VIN, Dealer #, and Product Type are on the last page (Dealer Section).
+        last_page = pdf_reader.pages[-1]
+        last_page_text = last_page.extract_text() or ""
         vin = _extract_vin(last_page_text)
-        dealer_id = _extract_dealer_id(last_page_text)
+        dealer_id, product_type = _extract_dealer_section(last_page)
 
         # Address is on the applicant page (first page for applicant, page 0).
         applicant_page_text = pdf_reader.pages[0].extract_text() or ""
@@ -726,6 +808,7 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
             "address": address,
             "dealer_id": dealer_id,
             "vin": vin,
+            "product_type": product_type,
             "generated_date": generated_date,
             "opt_in_status": opt_in_status,
             "telemarketing_phones": phones,
@@ -745,6 +828,7 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
             "address": vision.get("address"),
             "dealer_id": vision.get("dealer_id"),
             "vin": vision.get("vin"),
+            "product_type": vision.get("product_type"),
             "generated_date": vision.get("generated_date"),
             "opt_in_status": vision.get("opt_in_status", "unclear"),
             "telemarketing_phones": vision.get("telemarketing_phones") or [],
@@ -763,6 +847,7 @@ def extract_credit_app_data(pdf_reader, *, model: str | None = None) -> dict:
         "address": vision.get("address"),
         "dealer_id": vision.get("dealer_id"),
         "vin": vision.get("vin"),
+        "product_type": vision.get("product_type"),
         "generated_date": vision.get("generated_date"),
         "opt_in_status": vision.get("opt_in_status", "unclear"),
         "telemarketing_phones": vision.get("telemarketing_phones") or [],
@@ -797,7 +882,7 @@ def write_results_to_excel(results: list[dict], output_xlsx: str | Path) -> None
 
     phone_headers = [f"Phone {i + 1}" for i in range(_MAX_PHONES)]
     headers = (
-        ["Last Name", "First Name", "Address", "Dealer ID", "VIN", "Generated Date"]
+        ["Last Name", "First Name", "Address", "Dealer ID", "VIN", "Product Type", "Generated Date"]
         + phone_headers
         + ["Consent", "Source File"]
     )
@@ -815,6 +900,7 @@ def write_results_to_excel(results: list[dict], output_xlsx: str | Path) -> None
                 data.get("address") or "",
                 data.get("dealer_id") or "",
                 data.get("vin") or "",
+                data.get("product_type") or "",
                 data.get("generated_date") or "",
             ]
             + phone_cells
@@ -841,7 +927,7 @@ def append_results_to_excel(results: list[dict], output_xlsx: str | Path) -> Non
     output_xlsx = Path(output_xlsx)
     phone_headers = [f"Phone {i + 1}" for i in range(_MAX_PHONES)]
     headers = (
-        ["Last Name", "First Name", "Address", "Dealer ID", "VIN", "Generated Date"]
+        ["Last Name", "First Name", "Address", "Dealer ID", "VIN", "Product Type", "Generated Date"]
         + phone_headers
         + ["Consent", "Source File"]
     )
@@ -867,6 +953,7 @@ def append_results_to_excel(results: list[dict], output_xlsx: str | Path) -> Non
                 data.get("address") or "",
                 data.get("dealer_id") or "",
                 data.get("vin") or "",
+                data.get("product_type") or "",
                 data.get("generated_date") or "",
             ]
             + phone_cells
@@ -910,7 +997,7 @@ def process_folder_to_excel(
             data = {
                 "last_name": None, "first_name": None,
                 "address": None, "dealer_id": None, "vin": None,
-                "generated_date": None,
+                "product_type": None, "generated_date": None,
                 "opt_in_status": "error", "telemarketing_phones": [],
             }
         data["source_file"] = str(pdf_path)
